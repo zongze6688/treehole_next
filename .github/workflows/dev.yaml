@@ -2,7 +2,7 @@ name: Dev Build
 on:
   push:
     branches: [ dev, OpenClaw ]
-    workflow_dispatch:
+  workflow_dispatch:
 
 env:
   APP_NAME: treehole_next
