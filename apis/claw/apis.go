@@ -2,15 +2,17 @@ package claw
 
 import (
 	"fmt"
-	"time"
 	"math/rand"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-json"
 
 	"github.com/opentreehole/go-common"
 
 	. "treehole_next/models"
+	"treehole_next/config"
 
 	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
@@ -237,17 +239,16 @@ func handleAuth(c *websocket.Conn, client *Client, rawMsg json.RawMessage) {
 		return
 	}
 
-	// 解析并校验 JWT token
-	user := &User{BanDivision: make(map[int]*time.Time)}
-	if err := common.ParseJWTToken(authMsg.Token, user); err != nil {
-		sendError(c, ErrCodeAuthFailed, "token 解析失败，请重新登录", "", 0)
+	// 请求 auth 服务验证 token
+	userID, err := validateUserToken(authMsg.Token)
+	if err != nil {
+		log.Err(err).Msg("[Claw] validate token failed")
+		sendError(c, ErrCodeAuthFailed, "token 验证失败，请重新登录", "", 0)
 		return
 	}
 
-	if user.ID == 0 {
-		sendError(c, ErrCodeAuthFailed, "token 中未包含合法用户信息", "", 0)
-		return
-	}
+	user := &User{BanDivision: make(map[int]*time.Time)}
+	user.ID = userID
 
 	// 从数据库加载用户完整信息
 	if err := user.LoadUserByID(user.ID); err != nil {
@@ -432,3 +433,32 @@ func sendError(c *websocket.Conn, code string, errMsg string, messageID string, 
 		log.Err(err).Msgf("[Claw] Write error message failed: %v", err)
 	}
 }
+
+func validateUserToken(token string) (int, error) {
+	url := config.Config.AuthUrl + "/validate/user"
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("validate token failed: status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		UserID int `json:"user_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+
+	return result.UserID, nil
+}
+
