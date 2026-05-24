@@ -435,7 +435,7 @@ func sendError(c *websocket.Conn, code string, errMsg string, messageID string, 
 }
 
 func validateUserToken(token string) (int, error) {
-	url := config.Config.AuthUrl + "/validate/user"
+	url := config.Config.AuthUrl + "/api/validate/user"
 	req, err := http.NewRequest("POST", url, nil)
 	if err != nil {
 		return 0, err
