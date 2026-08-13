@@ -10,28 +10,31 @@ import (
 type ClawSession struct {
 	ID            uint      `json:"id" gorm:"primaryKey"`
 	UserID        int       `json:"user_id" gorm:"index:idx_claw_user_session,priority:1"`
+	InstanceID    uint      `json:"instance_id" gorm:"index:idx_claw_instance_session,priority:1"`
 	UserSessionID int       `json:"user_session_id" gorm:"not null;uniqueIndex:idx_claw_user_session,priority:2"`
-	Conversation  string    `json:"conversation"`                     // 用户自定义的会话名称
+	Conversation  string    `json:"conversation"`                                                // 用户自定义的会话名称
 	OC_SessionID  string    `json:"oc_session_id" gorm:"type:varchar(191);not null;uniqueIndex"` // OpenClaw 生成的 session ID
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type ClawMessage struct {
-	ID        uint           `json:"id" gorm:"primaryKey"`
-	Type      string         `json:"type" gorm:"size:32;index"`
-	From      string         `json:"from" gorm:"size:64"`
-	Content   string         `json:"content" gorm:"type:text;not null"`
-	MessageID string         `json:"message_id" gorm:"type:varchar(191);index"`
-	TaskID    string         `json:"task_id,omitempty" gorm:"type:varchar(191);index"`
-	SessionID string         `json:"session_id,omitempty" gorm:"size:191;index"`
-	ChannelID int            `json:"channel_id" gorm:"index"`
-	Timestamp int64          `json:"timestamp"`
-	Media     any            `json:"media" gorm:"serializer:json"`
-	Version   string         `json:"version,omitempty" gorm:"size:32"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+	ID         uint           `json:"id" gorm:"primaryKey"`
+	UserID     int            `json:"user_id,omitempty" gorm:"index:idx_claw_user_task,priority:1"`
+	Type       string         `json:"type" gorm:"size:32;index"`
+	From       string         `json:"from" gorm:"size:64"`
+	Content    string         `json:"content" gorm:"type:text;not null"`
+	MessageID  string         `json:"message_id" gorm:"type:varchar(191);index"`
+	TaskID     string         `json:"task_id,omitempty" gorm:"type:varchar(191);index"`
+	SessionID  string         `json:"session_id,omitempty" gorm:"size:191;index"`
+	InstanceID uint           `json:"instance_id,omitempty" gorm:"index:idx_claw_instance_task,priority:1"`
+	ChannelID  int            `json:"channel_id" gorm:"index"`
+	Timestamp  int64          `json:"timestamp"`
+	Media      any            `json:"media" gorm:"serializer:json"`
+	Version    string         `json:"version,omitempty" gorm:"size:32"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 func (ClawSession) TableName() string {
@@ -68,6 +71,15 @@ func GetSessionByUserAndSessionID(tx *gorm.DB, userID int, userSessionID int) (*
 	return &session, nil
 }
 
+func GetSessionByUserInstanceAndSessionID(tx *gorm.DB, userID int, instanceID uint, userSessionID int) (*ClawSession, error) {
+	var session ClawSession
+	err := tx.Where("user_id = ? AND instance_id = ? AND user_session_id = ?", userID, instanceID, userSessionID).First(&session).Error
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
 // GetSessionByOCID 通过 OpenClaw SessionID 查询
 func GetSessionByOCID(tx *gorm.DB, ocSessionID string) (*ClawSession, error) {
 	var session ClawSession
@@ -92,6 +104,10 @@ func getNextUserSessionID(tx *gorm.DB, userID int) (int, error) {
 }
 
 func CreateSession(tx *gorm.DB, userID int, conversation string, ocSessionID string) (*ClawSession, error) {
+	return CreateSessionForInstance(tx, userID, 0, conversation, ocSessionID)
+}
+
+func CreateSessionForInstance(tx *gorm.DB, userID int, instanceID uint, conversation string, ocSessionID string) (*ClawSession, error) {
 	userSessionID, err := getNextUserSessionID(tx, userID)
 	if err != nil {
 		return nil, err
@@ -99,6 +115,7 @@ func CreateSession(tx *gorm.DB, userID int, conversation string, ocSessionID str
 
 	session := &ClawSession{
 		UserID:        userID,
+		InstanceID:    instanceID,
 		UserSessionID: userSessionID,
 		Conversation:  conversation,
 		OC_SessionID:  ocSessionID,
@@ -154,4 +171,11 @@ func GetOrCreateSession(tx *gorm.DB, userID int, conversation string, ocSessionI
 	}
 	// 不存在则创建
 	return CreateSession(tx, userID, conversation, ocSessionID)
+}
+
+func GetMessagesByTaskAndInstance(tx *gorm.DB, taskID string, instanceID uint) ([]*ClawMessage, error) {
+	data := make([]*ClawMessage, 0)
+	err := tx.Where("task_id = ? AND instance_id = ?", taskID, instanceID).
+		Order("created_at ASC").Find(&data).Error
+	return data, err
 }

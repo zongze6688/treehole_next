@@ -155,7 +155,12 @@ func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&models.OpenClawInstance{}, &models.OpenClawOperation{}))
+	require.NoError(t, db.AutoMigrate(
+		&models.OpenClawInstance{},
+		&models.OpenClawOperation{},
+		&models.ClawSession{},
+		&models.ClawMessage{},
+	))
 	return db
 }
 

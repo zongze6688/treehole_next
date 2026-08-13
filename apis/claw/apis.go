@@ -11,8 +11,9 @@ import (
 
 	"github.com/opentreehole/go-common"
 
-	. "treehole_next/models"
 	"treehole_next/config"
+	. "treehole_next/models"
+	"treehole_next/openclaw"
 
 	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
@@ -71,11 +72,8 @@ func clawtest(c *fiber.Ctx) error {
 	}
 
 	// Forward to OpenClaw gateway if connected and authed
-	ocClientMu.Lock()
-	target := ocClient
-	ocClientMu.Unlock()
-
-	if target != nil && target.IsAuthed {
+	target, _, err := activeOpenClawClient(user.ID)
+	if err == nil {
 		target.mu.Lock()
 		err := target.Conn.WriteJSON(payload)
 		target.mu.Unlock()
@@ -306,11 +304,19 @@ func handleMessage(c *websocket.Conn, client *Client, rawMsg json.RawMessage) {
 		return
 	}
 
+	instance, err := ResolveUserInstance(client.UserID)
+	if err != nil || instance.State != string(openclaw.StateReady) {
+		sendError(c, ErrCodeProcessFailed, "OpenClaw 实例未就绪", msg.MessageID, msg.ChannelID)
+		return
+	}
+	msg.UserID = client.UserID
+	msg.InstanceID = instance.ID
+
 	var channelID int
 	if msg.ChannelID == 0 {
 		// 创建新会话
 		ocSessionID := fmt.Sprintf("oc-%d-%d", client.UserID, time.Now().UnixMilli())
-		session, err := CreateSession(DB, client.UserID, "新会话", ocSessionID)
+		session, err := CreateSessionForInstance(DB, client.UserID, instance.ID, "新会话", ocSessionID)
 		if err != nil {
 			log.Err(err).Msg("[Claw] create session failed")
 			sendError(c, ErrCodeInternal, "创建会话失败", msg.MessageID, 0)
@@ -319,7 +325,7 @@ func handleMessage(c *websocket.Conn, client *Client, rawMsg json.RawMessage) {
 		channelID = session.UserSessionID
 	} else {
 		// 检查会话是否存在
-		_, err := GetSessionByUserAndSessionID(DB, client.UserID, msg.ChannelID)
+		_, err := GetSessionByUserInstanceAndSessionID(DB, client.UserID, instance.ID, msg.ChannelID)
 		if err != nil {
 			if err == gorm.ErrRecordNotFound {
 				sendError(c, ErrCodeUnknownType, "会话不存在", msg.MessageID, msg.ChannelID)
@@ -333,7 +339,7 @@ func handleMessage(c *websocket.Conn, client *Client, rawMsg json.RawMessage) {
 	}
 
 	// 获取会话以得到 OC 的 session id
-	session, err := GetSessionByUserAndSessionID(DB, client.UserID, channelID)
+	session, err := GetSessionByUserInstanceAndSessionID(DB, client.UserID, instance.ID, channelID)
 	if err != nil {
 		log.Err(err).Msg("[Claw] get session after ensure failed")
 		sendError(c, ErrCodeInternal, "获取会话失败", msg.MessageID, channelID)
@@ -385,11 +391,8 @@ func handleMessage(c *websocket.Conn, client *Client, rawMsg json.RawMessage) {
 	}
 
 	// 否则将消息发往 OpenClaw 网关（如果已连接且认证成功）
-	ocClientMu.Lock()
-	target := ocClient
-	ocClientMu.Unlock()
-
-	if target != nil && target.IsAuthed {
+	target, instance, err := activeOpenClawClient(client.UserID)
+	if err == nil {
 		if msg.TaskID == "" {
 			// 防御性补充：确保发送给 OpenClaw 时包含 task_id
 			msg.TaskID = fmt.Sprintf("task_%d_%d_%d", client.UserID, channelID, time.Now().UnixMilli())
@@ -406,15 +409,13 @@ func handleMessage(c *websocket.Conn, client *Client, rawMsg json.RawMessage) {
 			"version":    "1.0",
 		}
 		log.Info().Msgf("[Claw] forwarding to OpenClaw task_id=%s session_id=%s content_len=%d", msg.TaskID, msg.SessionID, len(msg.Content))
-		target.mu.Lock()
-		err := target.Conn.WriteJSON(payload)
-		target.mu.Unlock()
+		err := sendToOpenClaw(target, payload)
 		if err != nil {
 			log.Err(err).Msg("[Claw] send to OpenClaw failed")
 			// 不将错误返回前端，只记录日志；消息已落库
 		}
 	} else {
-		log.Warn().Msg("[Claw] no OpenClaw client connected; message saved but not forwarded")
+		log.Warn().Err(err).Msg("[Claw] no OpenClaw client connected; message saved but not forwarded")
 	}
 }
 
@@ -461,4 +462,3 @@ func validateUserToken(token string) (int, error) {
 
 	return result.UserID, nil
 }
-

@@ -87,6 +87,9 @@ func CanTransition(from, to InstanceState) bool {
 }
 
 func Transition(instance *models.OpenClawInstance, to InstanceState) error {
+	if to == StateReady {
+		return ErrInvalidStateTransition
+	}
 	if instance == nil || !ValidState(InstanceState(instance.State)) || !ValidState(to) ||
 		!CanTransition(InstanceState(instance.State), to) {
 		return ErrInvalidStateTransition
@@ -100,7 +103,12 @@ func MarkReady(instance *models.OpenClawInstance, readiness Readiness) error {
 	if !readiness.ContainerRunning || !readiness.GatewayHealthy || !readiness.ChannelAuthenticated {
 		return ErrInvalidStateTransition
 	}
-	return Transition(instance, StateReady)
+	if instance == nil || InstanceState(instance.State) != StateStarting {
+		return ErrInvalidStateTransition
+	}
+	instance.State = string(StateReady)
+	instance.UpdatedAt = time.Now()
+	return nil
 }
 
 type InstanceService struct {
