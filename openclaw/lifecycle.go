@@ -2,6 +2,8 @@ package openclaw
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -145,6 +147,33 @@ func (s *LifecycleService) Create(
 		Operation: result.Operation,
 		Reused:    result.Reused,
 	}, nil
+}
+
+// Onboard performs the APP-facing onboarding flow: provision the instance,
+// start it, and require all readiness signals before returning success.
+// Create remains the lower-level provisioning operation for callers that need
+// to manage startup separately.
+func (s *LifecycleService) Onboard(
+	ctx context.Context, userID int, idempotencyKey string, req OnboardRequest,
+) (*LifecycleResult, error) {
+	created, err := s.Create(ctx, userID, idempotencyKey, req)
+	if err != nil {
+		return nil, err
+	}
+
+	started, err := s.Start(ctx, userID, onboardStartIdempotencyKey(userID, idempotencyKey))
+	if err != nil {
+		return nil, err
+	}
+	started.Reused = created.Reused || started.Reused
+	return started, nil
+}
+
+const onboardStartKeyPrefix = "openclaw:onboard:start:v1:"
+
+func onboardStartIdempotencyKey(userID int, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", userID, idempotencyKey)))
+	return onboardStartKeyPrefix + hex.EncodeToString(digest[:])
 }
 
 func (s *LifecycleService) Start(ctx context.Context, userID int, idempotencyKey string) (*LifecycleResult, error) {

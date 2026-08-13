@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"treehole_next/models"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,6 +66,71 @@ func TestLifecycleServiceRunsFullLifecycleAndPreservesProviderIDUntilReset(t *te
 	require.Empty(t, reset.Instance.ProviderInstanceID)
 	require.Equal(t, 1, provider.destroyCalls())
 	require.Equal(t, 2, provider.stopCalls())
+}
+
+func TestLifecycleServiceOnboardCreatesStartsAndRequiresReadiness(t *testing.T) {
+	db := testDB(t)
+	provider := &lifecycleProvider{}
+	service := NewLifecycleService(db, provider, readyForTest())
+
+	result, err := service.Onboard(context.Background(), 1, "onboard-1", OnboardRequest{Provider: "fleet"})
+	require.NoError(t, err)
+	require.Equal(t, StateReady, InstanceState(result.Instance.State))
+	require.Equal(t, 1, provider.creates)
+	require.Equal(t, 1, provider.startCalls())
+	require.False(t, result.Reused)
+
+	var operations []models.OpenClawOperation
+	require.NoError(t, db.Where("user_id = ?", 1).Order("id ASC").Find(&operations).Error)
+	require.Len(t, operations, 2)
+	require.Equal(t, operationOnboard, operations[0].Operation)
+	require.Equal(t, "onboard-1", operations[0].IdempotencyKey)
+	require.Equal(t, operationStart, operations[1].Operation)
+	require.Equal(t, onboardStartIdempotencyKey(1, "onboard-1"), operations[1].IdempotencyKey)
+	require.NotEqual(t, operations[0].IdempotencyKey, operations[1].IdempotencyKey)
+	require.Equal(t, OperationCompleted, OperationStatus(operations[0].Status))
+	require.Equal(t, OperationCompleted, OperationStatus(operations[1].Status))
+}
+
+func TestLifecycleServiceOnboardDuplicateReusesStableStartOperation(t *testing.T) {
+	db := testDB(t)
+	provider := &lifecycleProvider{}
+	service := NewLifecycleService(db, provider, readyForTest())
+	request := OnboardRequest{Provider: "fleet", Name: "agent"}
+
+	first, err := service.Onboard(context.Background(), 1, "onboard-same", request)
+	require.NoError(t, err)
+	second, err := service.Onboard(context.Background(), 1, "onboard-same", request)
+	require.NoError(t, err)
+
+	require.False(t, first.Reused)
+	require.True(t, second.Reused)
+	require.Equal(t, first.Instance.ID, second.Instance.ID)
+	require.Equal(t, first.Operation.ID, second.Operation.ID)
+	require.Equal(t, 1, provider.creates)
+	require.Equal(t, 1, provider.startCalls())
+
+	var operations []models.OpenClawOperation
+	require.NoError(t, db.Where("user_id = ?", 1).Find(&operations).Error)
+	require.Len(t, operations, 2)
+}
+
+func TestLifecycleServiceOnboardDoesNotReportReadyWhenReadinessFails(t *testing.T) {
+	db := testDB(t)
+	provider := &lifecycleProvider{}
+	service := NewLifecycleService(db, provider, readinessForSignals(Readiness{
+		ContainerRunning: true,
+		GatewayHealthy:   true,
+	}))
+
+	result, err := service.Onboard(context.Background(), 1, "onboard-not-ready", OnboardRequest{Provider: "fleet"})
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrInstanceNotReady)
+
+	var instance models.OpenClawInstance
+	require.NoError(t, db.Where("user_id = ?", 1).First(&instance).Error)
+	require.Equal(t, StateFailed, InstanceState(instance.State))
+	require.Equal(t, 1, provider.startCalls())
 }
 
 func TestLifecycleServiceConcurrentStartIsIdempotent(t *testing.T) {

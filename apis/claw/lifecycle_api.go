@@ -75,7 +75,7 @@ func Onboard(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil {
 		return common.BadRequest("请求格式错误")
 	}
-	result, err := lifecycleService.Create(context.Background(), userID, key, openclaw.OnboardRequest{
+	result, err := lifecycleService.Onboard(context.Background(), userID, key, openclaw.OnboardRequest{
 		Provider: body.Provider,
 		Name:     body.Name,
 		Image:    body.Image,
