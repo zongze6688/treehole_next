@@ -114,7 +114,7 @@ func TestFleetProviderRetriesAndNormalizesErrors(t *testing.T) {
 		Sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	_, err := provider.Create(context.Background(), CreateRequest{UserID: 1})
+	_, err := provider.Create(context.Background(), CreateRequest{UserID: 1, IdempotencyKey: "retry-key"})
 	require.ErrorIs(t, err, ErrProviderUnavailable)
 	require.Equal(t, 3, transport.createCalls)
 }

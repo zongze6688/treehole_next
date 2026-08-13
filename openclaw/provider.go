@@ -17,10 +17,11 @@ const (
 )
 
 type CreateRequest struct {
-	UserID   int
-	Name     string
-	Image    string
-	Metadata map[string]string
+	UserID         int
+	Name           string
+	Image          string
+	Metadata       map[string]string
+	IdempotencyKey string
 }
 
 type ProviderInstance struct {
@@ -49,10 +50,11 @@ type OpenClawInstanceProvider interface {
 }
 
 type FleetCreateRequest struct {
-	UserID   int
-	Name     string
-	Image    string
-	Metadata map[string]string
+	UserID         int
+	Name           string
+	Image          string
+	Metadata       map[string]string
+	IdempotencyKey string
 }
 
 type FleetInstance struct {
@@ -146,9 +148,10 @@ var (
 )
 
 type ProviderError struct {
-	Operation string
-	Code      ProviderErrorCode
-	Kind      error
+	Operation  string
+	Code       ProviderErrorCode
+	Kind       error
+	CleanupErr error
 }
 
 func (e *ProviderError) Error() string {

@@ -26,6 +26,7 @@ type OpenClawOperation struct {
 	InstanceID     *uint     `json:"instance_id,omitempty" gorm:"index"`
 	Operation      string    `json:"operation" gorm:"size:32;not null"`
 	TargetState    string    `json:"target_state,omitempty" gorm:"size:32"`
+	RequestHash    string    `json:"-" gorm:"size:64"`
 	IdempotencyKey string    `json:"-" gorm:"size:191;not null;uniqueIndex:uidx_openclaw_operation_key,priority:2"`
 	Status         string    `json:"status" gorm:"size:32;not null;index"`
 	ErrorCode      string    `json:"error_code,omitempty" gorm:"size:64"`

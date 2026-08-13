@@ -2,6 +2,9 @@ package openclaw
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -154,32 +157,43 @@ func (s *InstanceService) Onboard(ctx context.Context, userID int, idempotencyKe
 	lock.Lock()
 	defer lock.Unlock()
 
-	instance, operation, execute, reused, err := s.reserveOnboard(userID, idempotencyKey, req.Provider)
+	instance, operation, execute, reused, err := s.reserveOnboard(userID, idempotencyKey, req)
 	if err != nil {
 		return nil, err
 	}
 	if !execute {
+		if operation.ID == 0 {
+			operation = &models.OpenClawOperation{
+				UserID: userID, InstanceID: &instance.ID, Operation: operationOnboard,
+				TargetState: instance.State, Status: string(OperationCompleted),
+				RequestHash: hashOnboardRequest(req),
+			}
+		}
 		return &OnboardResult{Instance: instance, Operation: operation, Reused: reused}, nil
 	}
 
 	providerInstance, err := s.provider.Create(ctx, CreateRequest{
 		UserID: userID, Name: req.Name, Image: req.Image, Metadata: req.Metadata,
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		if providerInstance.ID != "" {
-			_ = s.provider.Destroy(context.Background(), providerInstance.ID)
+		if finishErr := s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(err), safeErrorMessage(err), false); finishErr != nil {
+			s.failOperationBestEffort(operation.ID, instance.ID, providerErrorCode(finishErr), "failed to persist provider failure")
 		}
-		_ = s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(err), safeErrorMessage(err), false)
 		return nil, err
 	}
 	if providerInstance.ID == "" {
 		err = &ProviderError{Operation: "create", Code: ProviderErrorUnknown, Kind: ErrProviderUnknown}
-		_ = s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(err), safeErrorMessage(err), false)
+		if finishErr := s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(err), safeErrorMessage(err), false); finishErr != nil {
+			s.failOperationBestEffort(operation.ID, instance.ID, providerErrorCode(finishErr), "failed to persist provider failure")
+		}
 		return nil, err
 	}
 
 	if err := s.finishOnboard(operation.ID, instance.ID, providerInstance.ID, "", "", true); err != nil {
-		_ = s.provider.Destroy(context.Background(), providerInstance.ID)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = s.provider.Destroy(cleanupCtx, providerInstance.ID)
 		return nil, err
 	}
 
@@ -189,16 +203,20 @@ func (s *InstanceService) Onboard(ctx context.Context, userID int, idempotencyKe
 	return &OnboardResult{Instance: instance, Operation: operation}, nil
 }
 
-func (s *InstanceService) reserveOnboard(userID int, key, provider string) (*models.OpenClawInstance, *models.OpenClawOperation, bool, bool, error) {
+func (s *InstanceService) reserveOnboard(userID int, key string, req OnboardRequest) (*models.OpenClawInstance, *models.OpenClawOperation, bool, bool, error) {
 	var instance models.OpenClawInstance
 	var operation models.OpenClawOperation
 	execute := false
 	reused := false
+	requestHash := hashOnboardRequest(req)
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		err := tx.Where("user_id = ? AND idempotency_key = ?", userID, key).First(&operation).Error
 		if err == nil {
 			if operation.Operation != operationOnboard {
+				return ErrInstanceConflict
+			}
+			if operation.RequestHash != requestHash {
 				return ErrInstanceConflict
 			}
 			switch OperationStatus(operation.Status) {
@@ -212,7 +230,11 @@ func (s *InstanceService) reserveOnboard(userID int, key, provider string) (*mod
 				reused = true
 				return nil
 			case OperationRunning:
-				return ErrOperationInProgress
+				if err := tx.First(&instance, *operation.InstanceID).Error; err != nil {
+					return err
+				}
+				reused = true
+				return nil
 			case OperationFailed:
 				return fmt.Errorf("%w: %s", ErrOperationFailed, operation.ErrorCode)
 			default:
@@ -227,7 +249,7 @@ func (s *InstanceService) reserveOnboard(userID int, key, provider string) (*mod
 			Where("user_id = ?", userID).First(&instance).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			instance = models.OpenClawInstance{
-				UserID: userID, Provider: provider, State: string(StateNotStarted),
+				UserID: userID, Provider: req.Provider, State: string(StateNotStarted),
 			}
 			if err := tx.Create(&instance).Error; err != nil {
 				return err
@@ -235,10 +257,14 @@ func (s *InstanceService) reserveOnboard(userID int, key, provider string) (*mod
 		} else if err != nil {
 			return err
 		} else {
-			if instance.Provider != provider {
+			if instance.Provider != req.Provider {
 				return ErrInstanceConflict
 			}
 			if instance.State != string(StateNotStarted) && instance.State != string(StateFailed) {
+				if err := tx.Where("user_id = ? AND instance_id = ?", userID, instance.ID).
+					Order("id DESC").First(&operation).Error; err != nil {
+					return err
+				}
 				reused = true
 				return nil
 			}
@@ -246,7 +272,8 @@ func (s *InstanceService) reserveOnboard(userID int, key, provider string) (*mod
 
 		operation = models.OpenClawOperation{
 			UserID: userID, InstanceID: &instance.ID, Operation: operationOnboard,
-			TargetState: string(StateStarting), IdempotencyKey: key, Status: string(OperationRunning),
+			TargetState: string(StateStarting), RequestHash: requestHash,
+			IdempotencyKey: key, Status: string(OperationRunning),
 		}
 		if err := tx.Create(&operation).Error; err != nil {
 			return err
@@ -264,6 +291,26 @@ func (s *InstanceService) reserveOnboard(userID int, key, provider string) (*mod
 		return nil, nil, false, false, err
 	}
 	return &instance, &operation, execute, reused, nil
+}
+
+func hashOnboardRequest(req OnboardRequest) string {
+	data, _ := json.Marshal(struct {
+		Provider string            `json:"provider"`
+		Name     string            `json:"name"`
+		Image    string            `json:"image"`
+		Metadata map[string]string `json:"metadata"`
+	}{req.Provider, req.Name, req.Image, req.Metadata})
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
+func (s *InstanceService) failOperationBestEffort(operationID, instanceID uint, code, message string) {
+	_ = s.db.Transaction(func(tx *gorm.DB) error {
+		_ = tx.Model(&models.OpenClawInstance{}).Where("id = ?", instanceID).
+			Updates(map[string]any{"state": string(StateFailed), "last_error_code": code, "last_error_message": message}).Error
+		return tx.Model(&models.OpenClawOperation{}).Where("id = ? AND status = ?", operationID, string(OperationRunning)).
+			Updates(map[string]any{"status": string(OperationFailed), "error_code": code, "error_message": message}).Error
+	})
 }
 
 func (s *InstanceService) finishOnboard(operationID, instanceID uint, providerInstanceID, code, message string, success bool) error {
