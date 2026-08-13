@@ -27,6 +27,12 @@ func RegisterRoutes(app fiber.Router) {
 		return fiber.ErrUpgradeRequired
 	})
 	app.Get("/claw/oc", websocket.New(HandleOpenClawWebSocket))
+	app.Post("/claw/onboard", Onboard)
+	app.Get("/claw/instance", GetInstance)
+	app.Post("/claw/start", Start)
+	app.Post("/claw/stop", Stop)
+	app.Post("/claw/restart", Restart)
+	app.Post("/claw/reset", Reset)
 	app.Post("/claw/test", clawtest)
 	app.Get("/claw/channels", ListChannels)
 	app.Get("/claw/messages", ListMessages)
