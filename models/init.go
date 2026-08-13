@@ -155,6 +155,8 @@ func InitDB() {
 		&UrlHostnameBlacklist{},
 		&ClawSession{},
 		&ClawMessage{},
+		&OpenClawInstance{},
+		&OpenClawOperation{},
 	)
 	if err != nil {
 		log.Fatal().Err(err).Send()
