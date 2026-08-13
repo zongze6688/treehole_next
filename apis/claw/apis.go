@@ -205,6 +205,12 @@ func HandleWebSocket(c *websocket.Conn) {
 		switch base.Type {
 		case MessageTypeAuth:
 			handleAuth(c, client, rawMsg)
+		case OpenClawOnboardEvent, OpenClawInstanceStatusEvent, OpenClawChatSendEvent:
+			if !client.IsAuthed {
+				sendOpenClawError(c, "", ErrCodeNotAuthed, "请先完成认证")
+				continue
+			}
+			handleOpenClawEvent(c, client, rawMsg)
 		case MessageTypeMessage:
 			if !client.IsAuthed {
 				sendError(c, ErrCodeNotAuthed, "请先完成认证", "", 0)
@@ -218,6 +224,14 @@ func HandleWebSocket(c *websocket.Conn) {
 			client.mu.Unlock()
 			log.Info().Msgf("[Claw] recv pong from conn user=%d", client.UserID)
 		default:
+			if isOpenClawEvent(base.Type) {
+				if !client.IsAuthed {
+					sendOpenClawError(c, "", ErrCodeNotAuthed, "请先完成认证")
+					continue
+				}
+				handleOpenClawEvent(c, client, rawMsg)
+				continue
+			}
 			sendError(c, ErrCodeUnknownType, "未知的消息类型", "", 0)
 		}
 	}
