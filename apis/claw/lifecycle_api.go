@@ -20,6 +20,12 @@ func SetLifecycleService(service *openclaw.LifecycleService) {
 	lifecycleService = service
 }
 
+// GetLifecycleService exposes the composition result for Control Plane
+// bootstrap tests without exposing provider credentials or wire details.
+func GetLifecycleService() *openclaw.LifecycleService {
+	return lifecycleService
+}
+
 type lifecycleRequest struct {
 	Provider string            `json:"provider"`
 	Name     string            `json:"name"`

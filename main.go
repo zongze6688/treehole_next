@@ -24,7 +24,9 @@ import (
 //	@BasePath	/api
 
 func main() {
-	app, cancel := bootstrap.Init()
+	// The concrete Fleet transport is intentionally composed outside bootstrap.
+	// Until supplied, lifecycle routes fail closed with service unavailable.
+	app, cancel := bootstrap.InitWithDependencies(bootstrap.Dependencies{})
 	go func() {
 		err := app.Listen("0.0.0.0:8000")
 		if err != nil {
