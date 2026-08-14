@@ -136,6 +136,8 @@ const (
 	ProviderErrorUnknown      ProviderErrorCode = "unknown"
 )
 
+const ProviderCleanupErrorCode = "cleanup_failed"
+
 var (
 	ErrProviderTimeout      = errors.New("provider timeout")
 	ErrProviderCanceled     = errors.New("provider operation canceled")
@@ -157,6 +159,9 @@ type ProviderError struct {
 func (e *ProviderError) Error() string {
 	if e == nil {
 		return ""
+	}
+	if e.CleanupErr != nil {
+		return fmt.Sprintf("provider %s failed: %s; compensation cleanup failed", e.Operation, e.Code)
 	}
 	return fmt.Sprintf("provider %s failed: %s", e.Operation, e.Code)
 }

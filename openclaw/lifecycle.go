@@ -10,6 +10,7 @@ import (
 
 	"treehole_next/models"
 
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -140,8 +141,10 @@ func (s *LifecycleService) Create(
 	}
 	result, err := s.instances.Onboard(ctx, userID, idempotencyKey, req)
 	if err != nil {
+		logLifecycleFailure(userID, 0, operationOnboard, err)
 		return nil, err
 	}
+	logLifecycleResult(userID, result.Instance, result.Operation)
 	return &LifecycleResult{
 		Instance:  result.Instance,
 		Operation: result.Operation,
@@ -158,13 +161,16 @@ func (s *LifecycleService) Onboard(
 ) (*LifecycleResult, error) {
 	created, err := s.Create(ctx, userID, idempotencyKey, req)
 	if err != nil {
+		logLifecycleFailure(userID, 0, operationStart, err)
 		return nil, err
 	}
 
 	started, err := s.Start(ctx, userID, onboardStartIdempotencyKey(userID, idempotencyKey))
 	if err != nil {
+		logLifecycleFailure(userID, 0, operationStart, err)
 		return nil, err
 	}
+	logLifecycleResult(userID, started.Instance, started.Operation)
 	started.Reused = created.Reused || started.Reused
 	return started, nil
 }
@@ -212,6 +218,7 @@ func (s *LifecycleService) Reset(ctx context.Context, userID int, idempotencyKey
 		return nil, ErrLifecycleNotConfigured
 	}
 	if err := validateLifecycleRequest(ctx, userID, idempotencyKey); err != nil {
+		logLifecycleFailure(userID, 0, operationReset, err)
 		return nil, err
 	}
 
@@ -223,6 +230,7 @@ func (s *LifecycleService) Reset(ctx context.Context, userID int, idempotencyKey
 		userID, idempotencyKey, operationReset, StateNotStarted,
 	)
 	if err != nil {
+		logLifecycleFailure(userID, 0, operationReset, err)
 		return nil, err
 	}
 	if !execute {
@@ -260,6 +268,7 @@ func (s *LifecycleService) run(
 		return nil, ErrLifecycleNotConfigured
 	}
 	if err := validateLifecycleRequest(ctx, userID, idempotencyKey); err != nil {
+		logLifecycleFailure(userID, 0, operation, err)
 		return nil, err
 	}
 
@@ -275,6 +284,7 @@ func (s *LifecycleService) run(
 		userID, idempotencyKey, operation, target,
 	)
 	if err != nil {
+		logLifecycleFailure(userID, 0, operation, err)
 		return nil, err
 	}
 	if !execute {
@@ -282,6 +292,7 @@ func (s *LifecycleService) run(
 	}
 
 	if _, err := action(instance); err != nil {
+		logLifecycleFailure(userID, instance.ID, operation, err)
 		return nil, s.fail(persisted.ID, instance.ID, err)
 	}
 
@@ -289,9 +300,11 @@ func (s *LifecycleService) run(
 	if check != nil {
 		readiness, err = check(instance)
 		if err != nil {
+			logLifecycleFailure(userID, instance.ID, operation, err)
 			return nil, s.fail(persisted.ID, instance.ID, err)
 		}
 		if !readiness.Ready() {
+			logLifecycleFailure(userID, instance.ID, operation, ErrInstanceNotReady)
 			return nil, s.fail(persisted.ID, instance.ID, ErrInstanceNotReady)
 		}
 	}
@@ -301,9 +314,12 @@ func (s *LifecycleService) run(
 			return nil, err
 		}
 	} else if err := s.finishReady(persisted.ID, instance.ID); err != nil {
+		logLifecycleFailure(userID, instance.ID, operation, err)
 		return nil, err
 	}
-	return s.result(persisted.ID, instance.ID, false, readiness), nil
+	result := s.result(persisted.ID, instance.ID, false, readiness)
+	logLifecycleResult(userID, result.Instance, result.Operation)
+	return result, nil
 }
 
 func (s *LifecycleService) checkReady(ctx context.Context, instance *models.OpenClawInstance) (Readiness, error) {
@@ -344,6 +360,12 @@ func (s *LifecycleService) reserve(
 			case OperationCompleted:
 				return nil
 			case OperationRunning:
+				if s.instances.operationIsStale(persisted) {
+					if err := s.instances.recoverStaleOperation(tx, &instance, &persisted); err != nil {
+						return err
+					}
+					return fmt.Errorf("%w: %s", ErrOperationFailed, staleOperationCode)
+				}
 				return ErrOperationInProgress
 			case OperationFailed:
 				return fmt.Errorf("%w: %s", ErrOperationFailed, persisted.ErrorCode)
@@ -362,7 +384,13 @@ func (s *LifecycleService) reserve(
 		var running models.OpenClawOperation
 		if err := tx.Where("instance_id = ? AND status = ?", instance.ID, string(OperationRunning)).
 			First(&running).Error; err == nil {
-			return ErrOperationInProgress
+			if s.instances.operationIsStale(running) {
+				if err := s.instances.recoverStaleOperation(tx, &instance, &running); err != nil {
+					return err
+				}
+			} else {
+				return ErrOperationInProgress
+			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
@@ -458,6 +486,8 @@ func (s *LifecycleService) finishStop(operationID, instanceID uint) error {
 		operation.Status = string(OperationCompleted)
 		instance.LastErrorCode = ""
 		instance.LastErrorMessage = ""
+		instance.CleanupErrorCode = ""
+		instance.CleanupErrorMessage = ""
 		return nil
 	})
 }
@@ -480,6 +510,8 @@ func (s *LifecycleService) finishReady(operationID, instanceID uint) error {
 		operation.Status = string(OperationCompleted)
 		instance.LastErrorCode = ""
 		instance.LastErrorMessage = ""
+		instance.CleanupErrorCode = ""
+		instance.CleanupErrorMessage = ""
 		return nil
 	})
 }
@@ -492,6 +524,8 @@ func (s *LifecycleService) finishReset(operationID, instanceID uint) error {
 		instance.ProviderInstanceID = ""
 		instance.LastErrorCode = ""
 		instance.LastErrorMessage = ""
+		instance.CleanupErrorCode = ""
+		instance.CleanupErrorMessage = ""
 		operation.Status = string(OperationCompleted)
 		return nil
 	})
@@ -505,8 +539,11 @@ func (s *LifecycleService) fail(operationID, instanceID uint, cause error) error
 		operation.Status = string(OperationFailed)
 		operation.ErrorCode = providerErrorCode(cause)
 		operation.ErrorMessage = safeErrorMessage(cause)
+		operation.CleanupErrorCode, operation.CleanupErrorMessage = providerCleanupState(cause)
 		instance.LastErrorCode = operation.ErrorCode
 		instance.LastErrorMessage = operation.ErrorMessage
+		instance.CleanupErrorCode = operation.CleanupErrorCode
+		instance.CleanupErrorMessage = operation.CleanupErrorMessage
 		return nil
 	}); err != nil {
 		return err
@@ -575,4 +612,30 @@ func validateLifecycleRequest(ctx context.Context, userID int, idempotencyKey st
 
 func (r Readiness) Ready() bool {
 	return r.ContainerRunning && r.GatewayHealthy && r.ChannelAuthenticated
+}
+
+func logLifecycleResult(userID int, instance *models.OpenClawInstance, operation *models.OpenClawOperation) {
+	if instance == nil || operation == nil {
+		return
+	}
+	log.Info().
+		Int("user_id", userID).
+		Uint("instance_id", instance.ID).
+		Uint("operation_id", operation.ID).
+		Str("operation", operation.Operation).
+		Str("state", instance.State).
+		Str("status", operation.Status).
+		Msg("OpenClaw lifecycle operation completed")
+}
+
+func logLifecycleFailure(userID int, instanceID uint, operation string, err error) {
+	event := log.Warn().
+		Int("user_id", userID).
+		Uint("instance_id", instanceID).
+		Str("operation", operation).
+		Str("error_code", providerErrorCode(err))
+	if errors.Is(err, ErrOperationInProgress) {
+		event = event.Str("reason", "operation_in_progress")
+	}
+	event.Msg("OpenClaw lifecycle operation failed")
 }

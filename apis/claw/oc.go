@@ -8,6 +8,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gofiber/contrib/websocket"
 	"github.com/rs/zerolog/log"
+	"gorm.io/gorm"
 
 	. "treehole_next/models"
 )
@@ -247,6 +248,19 @@ func handleOcMessage(c *websocket.Conn, client *OcClient, raw json.RawMessage) {
 	correlation, err := ResolveTaskCorrelation(DB, client.UserID, client.InstanceID, msg.TaskID, msg.SessionID)
 	if err != nil {
 		sendOcError(c, ErrCodeUnknownType, "消息关联不存在", msg.TaskID, msg.SessionID)
+		return
+	}
+
+	var duplicate ClawMessage
+	if err := DB.Where(
+		"user_id = ? AND instance_id = ? AND task_id = ? AND from = ?",
+		client.UserID, client.InstanceID, msg.TaskID, "openclaw",
+	).First(&duplicate).Error; err == nil {
+		// Replies are idempotent by trusted instance/task correlation. A
+		// reconnect or provider retry must not duplicate persisted replies.
+		return
+	} else if err != gorm.ErrRecordNotFound {
+		sendOcError(c, ErrCodeInternal, "查询消息失败", msg.TaskID, msg.SessionID)
 		return
 	}
 

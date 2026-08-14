@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"treehole_next/models"
 
@@ -240,6 +241,95 @@ func TestLifecycleAcceptanceCancellationDuringCompletedStartDoesNotRewriteResult
 	require.Equal(t, 1, provider.startCalls())
 }
 
+func TestLifecycleAcceptanceRecoversStaleRunningOperation(t *testing.T) {
+	db := testDB(t)
+	provider := &acceptanceProvider{instance: ProviderInstance{ID: "provider-stale"}}
+	service := NewLifecycleService(db, provider, readyForTest())
+	service.instances.staleOperationAfter = time.Minute
+
+	instance := &models.OpenClawInstance{
+		UserID:             1,
+		Provider:           "fleet",
+		ProviderInstanceID: "provider-stale",
+		State:              string(StateStarting),
+	}
+	require.NoError(t, db.Create(instance).Error)
+	startedAt := time.Now().Add(-time.Hour)
+	operation := &models.OpenClawOperation{
+		UserID:         1,
+		InstanceID:     &instance.ID,
+		Operation:      operationStart,
+		TargetState:    string(StateReady),
+		IdempotencyKey: "stale-start",
+		Status:         string(OperationRunning),
+		CreatedAt:      startedAt,
+		UpdatedAt:      startedAt,
+	}
+	require.NoError(t, db.Create(operation).Error)
+
+	result, err := service.Start(context.Background(), 1, "new-start")
+	require.NoError(t, err)
+	require.Equal(t, StateReady, InstanceState(result.Instance.State))
+
+	var recovered models.OpenClawOperation
+	require.NoError(t, db.First(&recovered, operation.ID).Error)
+	require.Equal(t, OperationFailed, OperationStatus(recovered.Status))
+	require.Equal(t, staleOperationCode, recovered.ErrorCode)
+
+	var failed models.OpenClawInstance
+	require.NoError(t, db.First(&failed, instance.ID).Error)
+	require.Equal(t, StateReady, InstanceState(failed.State))
+}
+
+func TestLifecycleAcceptanceReonboardCleansFailedProviderBeforeCreate(t *testing.T) {
+	db := testDB(t)
+	provider := &acceptanceProvider{
+		instance: ProviderInstance{ID: "provider-new"},
+	}
+	service := NewLifecycleService(db, provider, readyForTest())
+
+	instance := &models.OpenClawInstance{
+		UserID:             1,
+		Provider:           "fleet",
+		ProviderInstanceID: "provider-old",
+		State:              string(StateFailed),
+	}
+	require.NoError(t, db.Create(instance).Error)
+
+	result, err := service.Create(context.Background(), 1, "re-onboard", OnboardRequest{Provider: "fleet"})
+	require.NoError(t, err)
+	require.Equal(t, StateStarting, InstanceState(result.Instance.State))
+	require.Equal(t, 1, provider.destroyCount)
+	require.Equal(t, "provider-new", result.Instance.ProviderInstanceID)
+}
+
+func TestLifecycleAcceptancePersistsReonboardCleanupFailure(t *testing.T) {
+	db := testDB(t)
+	provider := &acceptanceProvider{
+		instance:   ProviderInstance{ID: "provider-new"},
+		destroyErr: errors.New("destroy unavailable"),
+	}
+	service := NewLifecycleService(db, provider, readyForTest())
+
+	instance := &models.OpenClawInstance{
+		UserID:             1,
+		Provider:           "fleet",
+		ProviderInstanceID: "provider-old",
+		State:              string(StateFailed),
+	}
+	require.NoError(t, db.Create(instance).Error)
+
+	_, err := service.Create(context.Background(), 1, "re-onboard-cleanup-failure", OnboardRequest{Provider: "fleet"})
+	var providerErr *ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	require.NotNil(t, providerErr.CleanupErr)
+
+	var operation models.OpenClawOperation
+	require.NoError(t, db.Where("idempotency_key = ?", "re-onboard-cleanup-failure").First(&operation).Error)
+	require.Equal(t, OperationFailed, OperationStatus(operation.Status))
+	require.Equal(t, ProviderCleanupErrorCode, operation.CleanupErrorCode)
+}
+
 func readinessForSignals(want Readiness) ReadinessChecker {
 	return NewReadinessAggregator(ReadinessChecks{
 		ContainerRunning: func(context.Context, string) (bool, error) {
@@ -263,6 +353,7 @@ type acceptanceProvider struct {
 	stopCount    int
 	restartCount int
 	destroyCount int
+	destroyErr   error
 }
 
 func (p *acceptanceProvider) Create(context.Context, CreateRequest) (ProviderInstance, error) {
@@ -305,7 +396,7 @@ func (p *acceptanceProvider) Destroy(context.Context, string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.destroyCount++
-	return nil
+	return p.destroyErr
 }
 
 func (p *acceptanceProvider) Inspect(context.Context, string) (ProviderInspection, error) {

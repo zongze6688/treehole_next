@@ -149,7 +149,7 @@ func (p *FleetInstanceProvider) Inspect(ctx context.Context, instanceID string) 
 	if err := validateProviderInstanceID("inspect", instanceID); err != nil {
 		return ProviderInspection{}, err
 	}
-	instance, err := runFleetValue(p, ctx, "inspect", func(callCtx context.Context) (FleetInstance, error) {
+	instance, err := runFleetValueWithRetry(p, ctx, "inspect", true, func(callCtx context.Context) (FleetInstance, error) {
 		return p.transport.Inspect(callCtx, instanceID)
 	})
 	if err != nil {
@@ -162,7 +162,7 @@ func (p *FleetInstanceProvider) Logs(ctx context.Context, instanceID string) (Pr
 	if err := validateProviderInstanceID("logs", instanceID); err != nil {
 		return ProviderLogs{}, err
 	}
-	logs, err := runFleetValue(p, ctx, "logs", func(callCtx context.Context) (FleetLogs, error) {
+	logs, err := runFleetValueWithRetry(p, ctx, "logs", true, func(callCtx context.Context) (FleetLogs, error) {
 		return p.transport.Logs(callCtx, instanceID)
 	})
 	if err != nil {
@@ -172,20 +172,34 @@ func (p *FleetInstanceProvider) Logs(ctx context.Context, instanceID string) (Pr
 }
 
 func (p *FleetInstanceProvider) run(ctx context.Context, operation string, call func(context.Context) error) error {
-	_, err := runFleetValue(p, ctx, operation, func(callCtx context.Context) (struct{}, error) {
+	_, err := runFleetValueWithRetry(p, ctx, operation, false, func(callCtx context.Context) (struct{}, error) {
 		return struct{}{}, call(callCtx)
 	})
 	return err
 }
 
 func runFleetValue[T any](p *FleetInstanceProvider, ctx context.Context, operation string, call func(context.Context) (T, error)) (T, error) {
+	return runFleetValueWithRetry(p, ctx, operation, true, call)
+}
+
+func runFleetValueWithRetry[T any](
+	p *FleetInstanceProvider,
+	ctx context.Context,
+	operation string,
+	retry bool,
+	call func(context.Context) (T, error),
+) (T, error) {
 	var zero T
 	if p == nil || p.transport == nil {
 		return zero, &ProviderError{Operation: operation, Code: ProviderErrorUnavailable, Kind: ErrProviderUnavailable}
 	}
 
+	maxAttempts := 1
+	if retry {
+		maxAttempts = p.maxAttempts
+	}
 	var lastErr error
-	for attempt := 1; attempt <= p.maxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		attemptCtx, cancel := context.WithTimeout(ctx, p.timeout)
 		value, err := call(attemptCtx)
 		cancel()
@@ -193,7 +207,7 @@ func runFleetValue[T any](p *FleetInstanceProvider, ctx context.Context, operati
 			return value, nil
 		}
 		lastErr = err
-		if !p.shouldRetry(ctx, err, attempt) {
+		if !retry || !p.shouldRetryWithLimit(ctx, err, attempt, maxAttempts) {
 			break
 		}
 		if err := p.sleep(ctx, time.Duration(attempt)*p.backoff); err != nil {

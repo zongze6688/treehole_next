@@ -10,6 +10,17 @@ func normalizeFleetError(operation string, err error) error {
 		return nil
 	}
 
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		if providerErr.Operation == "" {
+			providerErr.Operation = operation
+		}
+		if providerErr.Kind == nil {
+			providerErr.Kind = ErrProviderUnknown
+		}
+		return providerErr
+	}
+
 	code := ProviderErrorUnknown
 	kind := ErrProviderUnknown
 	var fleetErr *FleetError

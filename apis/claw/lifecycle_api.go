@@ -27,6 +27,16 @@ type lifecycleRequest struct {
 	Metadata map[string]string `json:"metadata"`
 }
 
+type instanceStatusResponse struct {
+	InstanceID          uint   `json:"instance_id,omitempty"`
+	State               string `json:"state"`
+	Status              string `json:"status"`
+	LastErrorCode       string `json:"last_error_code,omitempty"`
+	LastErrorMessage    string `json:"last_error_message,omitempty"`
+	CleanupErrorCode    string `json:"cleanup_error_code,omitempty"`
+	CleanupErrorMessage string `json:"cleanup_error_message,omitempty"`
+}
+
 func currentUserID(c *fiber.Ctx) (int, error) {
 	user, err := GetCurrLoginUser(c)
 	if err != nil {
@@ -51,12 +61,23 @@ func GetInstance(c *fiber.Ctx) error {
 	var instance OpenClawInstance
 	err = DB.Where("user_id = ?", userID).First(&instance).Error
 	if err == gorm.ErrRecordNotFound {
-		return c.JSON(fiber.Map{"state": string(openclaw.StateNotStarted)})
+		return c.JSON(instanceStatusResponse{
+			State:  string(openclaw.StateNotStarted),
+			Status: string(openclaw.StateNotStarted),
+		})
 	}
 	if err != nil {
 		return common.BadRequest("获取实例状态失败")
 	}
-	return c.JSON(instance)
+	return c.JSON(instanceStatusResponse{
+		InstanceID:          instance.ID,
+		State:               instance.State,
+		Status:              instance.State,
+		LastErrorCode:       instance.LastErrorCode,
+		LastErrorMessage:    instance.LastErrorMessage,
+		CleanupErrorCode:    instance.CleanupErrorCode,
+		CleanupErrorMessage: instance.CleanupErrorMessage,
+	})
 }
 
 func Onboard(c *fiber.Ctx) error {

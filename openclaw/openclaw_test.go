@@ -36,6 +36,12 @@ func TestStateTransitions(t *testing.T) {
 	}
 }
 
+func TestGenericTransitionCannotBypassReadiness(t *testing.T) {
+	instance := &models.OpenClawInstance{State: string(StateStarting)}
+	require.ErrorIs(t, Transition(instance, StateReady), ErrInvalidStateTransition)
+	require.Equal(t, string(StateStarting), instance.State)
+}
+
 func TestMarkReadyRequiresAllSignals(t *testing.T) {
 	instance := &models.OpenClawInstance{State: string(StateStarting)}
 	require.ErrorIs(t, MarkReady(instance, Readiness{ContainerRunning: true, GatewayHealthy: true}), ErrInvalidStateTransition)
@@ -151,6 +157,41 @@ func TestFleetProviderCompensatesAfterPartialCreate(t *testing.T) {
 	require.Equal(t, []string{"partial"}, transport.destroyed)
 }
 
+func TestFleetProviderPreservesCompensationCleanupFailure(t *testing.T) {
+	cleanupErr := errors.New("cleanup unavailable")
+	transport := &fakeTransport{
+		createFn: func() (FleetInstance, error) {
+			return FleetInstance{ID: "partial"}, errors.New("create response failed")
+		},
+		destroyErr: cleanupErr,
+	}
+	provider := NewFleetInstanceProvider(transport, FleetProviderOptions{
+		Timeout: 50 * time.Millisecond, MaxAttempts: 1,
+		Sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	_, err := provider.Create(context.Background(), CreateRequest{UserID: 1})
+	var providerErr *ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	require.NotNil(t, providerErr.CleanupErr)
+	require.Contains(t, providerErr.Error(), "compensation cleanup failed")
+}
+
+func TestFleetProviderDoesNotRetryMutatingOperationsWithoutWireIdempotency(t *testing.T) {
+	transport := &fakeTransport{
+		startFn: func() error {
+			return &FleetError{Code: FleetErrorUnavailable, Retryable: true}
+		},
+	}
+	provider := NewFleetInstanceProvider(transport, FleetProviderOptions{
+		Timeout: 50 * time.Millisecond, MaxAttempts: 3,
+		Sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	require.ErrorIs(t, provider.Start(context.Background(), "fleet-1"), ErrProviderUnavailable)
+	require.Equal(t, 1, transport.startCalls)
+}
+
 func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
@@ -196,7 +237,10 @@ type fakeTransport struct {
 	createFn    func() (FleetInstance, error)
 	createCtxFn func(context.Context) (FleetInstance, error)
 	createCalls int
+	startFn     func() error
+	startCalls  int
 	destroyed   []string
+	destroyErr  error
 }
 
 func (t *fakeTransport) Create(ctx context.Context, _ FleetCreateRequest) (FleetInstance, error) {
@@ -209,7 +253,13 @@ func (t *fakeTransport) Create(ctx context.Context, _ FleetCreateRequest) (Fleet
 	}
 	return FleetInstance{ID: "fleet"}, nil
 }
-func (t *fakeTransport) Start(context.Context, string) error   { return nil }
+func (t *fakeTransport) Start(context.Context, string) error {
+	t.startCalls++
+	if t.startFn != nil {
+		return t.startFn()
+	}
+	return nil
+}
 func (t *fakeTransport) Stop(context.Context, string) error    { return nil }
 func (t *fakeTransport) Restart(context.Context, string) error { return nil }
 func (t *fakeTransport) Inspect(context.Context, string) (FleetInstance, error) {
@@ -220,5 +270,5 @@ func (t *fakeTransport) Logs(context.Context, string) (FleetLogs, error) {
 }
 func (t *fakeTransport) Destroy(_ context.Context, id string) error {
 	t.destroyed = append(t.destroyed, id)
-	return nil
+	return t.destroyErr
 }

@@ -43,7 +43,10 @@ func ResolveTaskCorrelation(tx *gorm.DB, userID int, instanceID uint, taskID, se
 		return nil, errors.New("invalid task correlation")
 	}
 	var message ClawMessage
-	query := tx.Where("user_id = ? AND instance_id = ? AND task_id = ?", userID, instanceID, taskID)
+	query := tx.Where(
+		"user_id = ? AND instance_id = ? AND task_id = ? AND from = ?",
+		userID, instanceID, taskID, "user",
+	)
 	if err := query.Order("created_at ASC").First(&message).Error; err != nil {
 		return nil, err
 	}

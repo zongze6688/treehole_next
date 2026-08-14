@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"treehole_next/models"
 
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -38,6 +40,12 @@ const (
 )
 
 const operationOnboard = "onboard"
+
+const (
+	defaultStaleOperationAfter = 15 * time.Minute
+	staleOperationCode         = "stale_operation"
+	staleOperationMessage      = "operation expired before completion"
+)
 
 var (
 	ErrInvalidStateTransition = errors.New("invalid OpenClaw instance state transition")
@@ -112,8 +120,9 @@ func MarkReady(instance *models.OpenClawInstance, readiness Readiness) error {
 }
 
 type InstanceService struct {
-	db       *gorm.DB
-	provider OpenClawInstanceProvider
+	db                  *gorm.DB
+	provider            OpenClawInstanceProvider
+	staleOperationAfter time.Duration
 
 	locksMu sync.Mutex
 	locks   map[int]*sync.Mutex
@@ -123,7 +132,12 @@ func NewInstanceService(db *gorm.DB, provider OpenClawInstanceProvider) *Instanc
 	if db == nil {
 		db = models.DB
 	}
-	return &InstanceService{db: db, provider: provider, locks: make(map[int]*sync.Mutex)}
+	return &InstanceService{
+		db:                  db,
+		provider:            provider,
+		staleOperationAfter: defaultStaleOperationAfter,
+		locks:               make(map[int]*sync.Mutex),
+	}
 }
 
 func (s *InstanceService) userLock(userID int) *sync.Mutex {
@@ -165,7 +179,7 @@ func (s *InstanceService) Onboard(ctx context.Context, userID int, idempotencyKe
 	lock.Lock()
 	defer lock.Unlock()
 
-	instance, operation, execute, reused, err := s.reserveOnboard(userID, idempotencyKey, req)
+	instance, operation, execute, reused, cleanupProviderID, err := s.reserveOnboard(userID, idempotencyKey, req)
 	if err != nil {
 		return nil, err
 	}
@@ -180,25 +194,43 @@ func (s *InstanceService) Onboard(ctx context.Context, userID int, idempotencyKe
 		return &OnboardResult{Instance: instance, Operation: operation, Reused: reused}, nil
 	}
 
+	if cleanupProviderID != "" {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupErr := s.provider.Destroy(cleanupCtx, cleanupProviderID)
+		cancel()
+		if cleanupErr != nil {
+			cleanupFailure := &ProviderError{
+				Operation:  "cleanup",
+				Code:       ProviderErrorUnknown,
+				Kind:       ErrProviderUnknown,
+				CleanupErr: cleanupErr,
+			}
+			if finishErr := s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(cleanupFailure), safeErrorMessage(cleanupFailure), false, cleanupFailure); finishErr != nil {
+				s.failOperationBestEffort(operation.ID, instance.ID, providerErrorCode(finishErr), "failed to persist provider cleanup failure", nil)
+			}
+			return nil, cleanupFailure
+		}
+	}
+
 	providerInstance, err := s.provider.Create(ctx, CreateRequest{
 		UserID: userID, Name: req.Name, Image: req.Image, Metadata: req.Metadata,
 		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		if finishErr := s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(err), safeErrorMessage(err), false); finishErr != nil {
-			s.failOperationBestEffort(operation.ID, instance.ID, providerErrorCode(finishErr), "failed to persist provider failure")
+		if finishErr := s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(err), safeErrorMessage(err), false, err); finishErr != nil {
+			s.failOperationBestEffort(operation.ID, instance.ID, providerErrorCode(finishErr), "failed to persist provider failure", nil)
 		}
 		return nil, err
 	}
 	if providerInstance.ID == "" {
 		err = &ProviderError{Operation: "create", Code: ProviderErrorUnknown, Kind: ErrProviderUnknown}
-		if finishErr := s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(err), safeErrorMessage(err), false); finishErr != nil {
-			s.failOperationBestEffort(operation.ID, instance.ID, providerErrorCode(finishErr), "failed to persist provider failure")
+		if finishErr := s.finishOnboard(operation.ID, instance.ID, "", providerErrorCode(err), safeErrorMessage(err), false, err); finishErr != nil {
+			s.failOperationBestEffort(operation.ID, instance.ID, providerErrorCode(finishErr), "failed to persist provider failure", nil)
 		}
 		return nil, err
 	}
 
-	if err := s.finishOnboard(operation.ID, instance.ID, providerInstance.ID, "", "", true); err != nil {
+	if err := s.finishOnboard(operation.ID, instance.ID, providerInstance.ID, "", "", true, nil); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_ = s.provider.Destroy(cleanupCtx, providerInstance.ID)
@@ -211,11 +243,16 @@ func (s *InstanceService) Onboard(ctx context.Context, userID int, idempotencyKe
 	return &OnboardResult{Instance: instance, Operation: operation}, nil
 }
 
-func (s *InstanceService) reserveOnboard(userID int, key string, req OnboardRequest) (*models.OpenClawInstance, *models.OpenClawOperation, bool, bool, error) {
+func (s *InstanceService) reserveOnboard(
+	userID int,
+	key string,
+	req OnboardRequest,
+) (*models.OpenClawInstance, *models.OpenClawOperation, bool, bool, string, error) {
 	var instance models.OpenClawInstance
 	var operation models.OpenClawOperation
 	execute := false
 	reused := false
+	cleanupProviderID := ""
 	requestHash := hashOnboardRequest(req)
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -238,8 +275,17 @@ func (s *InstanceService) reserveOnboard(userID int, key string, req OnboardRequ
 				reused = true
 				return nil
 			case OperationRunning:
+				if operation.InstanceID == nil {
+					return ErrOperationFailed
+				}
 				if err := tx.First(&instance, *operation.InstanceID).Error; err != nil {
 					return err
+				}
+				if s.operationIsStale(operation) {
+					if err := s.recoverStaleOperation(tx, &instance, &operation); err != nil {
+						return err
+					}
+					return fmt.Errorf("%w: %s", ErrOperationFailed, staleOperationCode)
 				}
 				reused = true
 				return nil
@@ -276,6 +322,9 @@ func (s *InstanceService) reserveOnboard(userID int, key string, req OnboardRequ
 				reused = true
 				return nil
 			}
+			if instance.State == string(StateFailed) {
+				cleanupProviderID = strings.TrimSpace(instance.ProviderInstanceID)
+			}
 		}
 
 		operation = models.OpenClawOperation{
@@ -296,9 +345,9 @@ func (s *InstanceService) reserveOnboard(userID int, key string, req OnboardRequ
 		return nil
 	})
 	if err != nil {
-		return nil, nil, false, false, err
+		return nil, nil, false, false, "", err
 	}
-	return &instance, &operation, execute, reused, nil
+	return &instance, &operation, execute, reused, cleanupProviderID, nil
 }
 
 func hashOnboardRequest(req OnboardRequest) string {
@@ -312,16 +361,32 @@ func hashOnboardRequest(req OnboardRequest) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func (s *InstanceService) failOperationBestEffort(operationID, instanceID uint, code, message string) {
+func (s *InstanceService) failOperationBestEffort(
+	operationID, instanceID uint,
+	code, message string,
+	cause error,
+) {
 	_ = s.db.Transaction(func(tx *gorm.DB) error {
+		cleanupCode, cleanupMessage := providerCleanupState(cause)
 		_ = tx.Model(&models.OpenClawInstance{}).Where("id = ?", instanceID).
-			Updates(map[string]any{"state": string(StateFailed), "last_error_code": code, "last_error_message": message}).Error
+			Updates(map[string]any{
+				"state": string(StateFailed), "last_error_code": code, "last_error_message": message,
+				"cleanup_error_code": cleanupCode, "cleanup_error_message": cleanupMessage,
+			}).Error
 		return tx.Model(&models.OpenClawOperation{}).Where("id = ? AND status = ?", operationID, string(OperationRunning)).
-			Updates(map[string]any{"status": string(OperationFailed), "error_code": code, "error_message": message}).Error
+			Updates(map[string]any{
+				"status": string(OperationFailed), "error_code": code, "error_message": message,
+				"cleanup_error_code": cleanupCode, "cleanup_error_message": cleanupMessage,
+			}).Error
 	})
 }
 
-func (s *InstanceService) finishOnboard(operationID, instanceID uint, providerInstanceID, code, message string, success bool) error {
+func (s *InstanceService) finishOnboard(
+	operationID, instanceID uint,
+	providerInstanceID, code, message string,
+	success bool,
+	cause error,
+) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var instance models.OpenClawInstance
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&instance, instanceID).Error; err != nil {
@@ -339,6 +404,8 @@ func (s *InstanceService) finishOnboard(operationID, instanceID uint, providerIn
 			instance.ProviderInstanceID = providerInstanceID
 			instance.LastErrorCode = ""
 			instance.LastErrorMessage = ""
+			instance.CleanupErrorCode = ""
+			instance.CleanupErrorMessage = ""
 			operation.Status = string(OperationCompleted)
 		} else {
 			if err := Transition(&instance, StateFailed); err != nil {
@@ -349,6 +416,9 @@ func (s *InstanceService) finishOnboard(operationID, instanceID uint, providerIn
 			operation.Status = string(OperationFailed)
 			operation.ErrorCode = code
 			operation.ErrorMessage = message
+			operation.CleanupErrorCode, operation.CleanupErrorMessage = providerCleanupState(cause)
+			instance.CleanupErrorCode = operation.CleanupErrorCode
+			instance.CleanupErrorMessage = operation.CleanupErrorMessage
 		}
 		if err := tx.Save(&instance).Error; err != nil {
 			return err
@@ -410,6 +480,57 @@ func (s *InstanceService) Transition(ctx context.Context, userID int, idempotenc
 	return &instance, err
 }
 
+func (s *InstanceService) operationIsStale(operation models.OpenClawOperation) bool {
+	if s.staleOperationAfter <= 0 {
+		return false
+	}
+	timestamp := operation.UpdatedAt
+	if timestamp.IsZero() {
+		timestamp = operation.CreatedAt
+	}
+	return !timestamp.IsZero() && time.Since(timestamp) > s.staleOperationAfter
+}
+
+func (s *InstanceService) recoverStaleOperation(
+	tx *gorm.DB,
+	instance *models.OpenClawInstance,
+	operation *models.OpenClawOperation,
+) error {
+	if operation == nil {
+		return nil
+	}
+	operation.Status = string(OperationFailed)
+	operation.ErrorCode = staleOperationCode
+	operation.ErrorMessage = staleOperationMessage
+	if instance != nil && InstanceState(instance.State) != StateFailed {
+		if CanTransition(InstanceState(instance.State), StateFailed) {
+			if err := Transition(instance, StateFailed); err != nil {
+				return err
+			}
+		} else {
+			instance.State = string(StateFailed)
+			instance.UpdatedAt = time.Now()
+		}
+	}
+	if instance != nil {
+		instance.LastErrorCode = staleOperationCode
+		instance.LastErrorMessage = staleOperationMessage
+		if err := tx.Save(instance).Error; err != nil {
+			return err
+		}
+	}
+	if err := tx.Save(operation).Error; err != nil {
+		return err
+	}
+	log.Warn().
+		Int("user_id", operation.UserID).
+		Uint("operation_id", operation.ID).
+		Str("operation", operation.Operation).
+		Str("reason", staleOperationCode).
+		Msg("OpenClaw stale operation recovered")
+	return nil
+}
+
 func providerErrorCode(err error) string {
 	var providerErr *ProviderError
 	if errors.As(err, &providerErr) {
@@ -424,4 +545,12 @@ func safeErrorMessage(err error) string {
 		return providerErr.Error()
 	}
 	return "provider operation failed"
+}
+
+func providerCleanupState(err error) (string, string) {
+	var providerErr *ProviderError
+	if !errors.As(err, &providerErr) || providerErr.CleanupErr == nil {
+		return "", ""
+	}
+	return ProviderCleanupErrorCode, "compensation cleanup failed"
 }
