@@ -118,6 +118,7 @@ type LifecycleService struct {
 	db        *gorm.DB
 	provider  OpenClawInstanceProvider
 	readiness ReadinessChecker
+	identity  WorkloadIdentity
 }
 
 func NewLifecycleService(db *gorm.DB, provider OpenClawInstanceProvider, readiness ReadinessChecker) *LifecycleService {
@@ -128,6 +129,16 @@ func NewLifecycleService(db *gorm.DB, provider OpenClawInstanceProvider, readine
 		provider:  provider,
 		readiness: readiness,
 	}
+}
+
+// SetWorkloadIdentity attaches the workload identity used to provision and
+// revoke the user-level OpenClaw token. Passing nil disables workload identity
+// handling; the call is safe on a nil receiver.
+func (s *LifecycleService) SetWorkloadIdentity(w WorkloadIdentity) {
+	if s == nil {
+		return
+	}
+	s.identity = w
 }
 
 // Create reuses the M1 onboarding transaction and provider contract. The
@@ -159,6 +170,17 @@ func (s *LifecycleService) Create(
 func (s *LifecycleService) Onboard(
 	ctx context.Context, userID int, idempotencyKey string, req OnboardRequest,
 ) (*LifecycleResult, error) {
+	if s.identity != nil {
+		env, err := s.identity.Env(ctx, userID)
+		if err != nil {
+			logLifecycleFailure(userID, 0, operationOnboard, err)
+			return nil, err
+		}
+		// The token is injected as CellEnv, which is excluded from the
+		// idempotency hash, so req.Metadata (the hashed part) stays stable.
+		req.CellEnv = mergeCellEnv(req.CellEnv, env)
+	}
+
 	created, err := s.Create(ctx, userID, idempotencyKey, req)
 	if err != nil {
 		logLifecycleFailure(userID, 0, operationStart, err)
@@ -245,6 +267,16 @@ func (s *LifecycleService) Reset(ctx context.Context, userID int, idempotencyKey
 	if strings.TrimSpace(instance.ProviderInstanceID) != "" {
 		if err := s.provider.Destroy(ctx, instance.ProviderInstanceID); err != nil {
 			return nil, s.fail(operation.ID, instance.ID, err)
+		}
+	}
+	if s.identity != nil {
+		if err := s.identity.Revoke(ctx, userID); err != nil {
+			log.Warn().
+				Int("user_id", userID).
+				Uint("instance_id", instance.ID).
+				Str("operation", operationReset).
+				Err(err).
+				Msg("OpenClaw workload identity revocation failed; continuing reset")
 		}
 	}
 	if err := s.finishReset(operation.ID, instance.ID); err != nil {

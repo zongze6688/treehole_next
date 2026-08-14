@@ -28,9 +28,10 @@ import (
 // provider-neutral dependencies; the production path composes a real Fleet
 // transport via buildDependenciesFromConfig (see Init).
 type Dependencies struct {
-	OpenClawLifecycle *openclaw.LifecycleService
-	OpenClawProvider  openclaw.OpenClawInstanceProvider
-	OpenClawReadiness openclaw.ReadinessChecker
+	OpenClawLifecycle        *openclaw.LifecycleService
+	OpenClawProvider         openclaw.OpenClawInstanceProvider
+	OpenClawReadiness        openclaw.ReadinessChecker
+	OpenClawWorkloadIdentity openclaw.WorkloadIdentity
 }
 
 func Init() (*fiber.App, context.CancelFunc) {
@@ -55,10 +56,20 @@ func buildDependenciesFromConfig() Dependencies {
 	provider := openclaw.NewFleetInstanceProvider(transport, openclaw.FleetProviderOptions{})
 	readiness := openclaw.NewFleetReadiness(transport.CellStatus, claw.IsChannelAuthenticated)
 	readiness.Wait = time.Duration(config.Config.OpenClawChannelWaitSeconds) * time.Second
-	return Dependencies{
+	deps := Dependencies{
 		OpenClawProvider:  provider,
 		OpenClawReadiness: readiness.ReadinessChecker(),
 	}
+	// The workload identity is only wired when a provision key is configured;
+	// without one every Env call would fail at runtime for each onboard.
+	if config.OpenClawSecrets.ProvisionKey != "" {
+		deps.OpenClawWorkloadIdentity = openclaw.NewHTTPWorkloadIdentity(openclaw.HTTPWorkloadIdentityOptions{
+			BaseURL:      config.Config.AuthUrl,
+			ProvisionKey: config.OpenClawSecrets.ProvisionKey,
+			WSUrl:        config.Config.OpenClawDantaWsURL,
+		})
+	}
+	return deps
 }
 
 func InitWithDependencies(deps Dependencies) (*fiber.App, context.CancelFunc) {
@@ -97,6 +108,7 @@ func configureOpenClawLifecycle(deps Dependencies) *openclaw.LifecycleService {
 		return nil
 	}
 	service := openclaw.NewLifecycleService(models.DB, deps.OpenClawProvider, deps.OpenClawReadiness)
+	service.SetWorkloadIdentity(deps.OpenClawWorkloadIdentity)
 	claw.SetLifecycleService(service)
 	return service
 }

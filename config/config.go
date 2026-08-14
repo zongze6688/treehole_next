@@ -28,6 +28,9 @@ var Config struct {
 	NotificationUrl  string   `env:"NOTIFICATION_URL"`
 	MessagePurgeDays int      `envDefault:"7" env:"MESSAGE_PURGE_DAYS"`
 	AuthUrl          string   `env:"AUTH_URL"`
+	// OpenClawDantaWsURL is the cell WebSocket endpoint injected into the cell
+	// environment as DANTA_WS_URL (non-secret).
+	OpenClawDantaWsURL string `env:"OPENCLAW_DANTA_WS_URL"`
 	// OpenClaw fleet control-plane configuration (non-secret; the binary,
 	// image, and runtime are passed to the host-side Fleet CLI).
 	OpenClawFleetEnabled       bool   `env:"OPENCLAW_FLEET_ENABLED" envDefault:"false"`
@@ -76,12 +79,21 @@ var Config struct {
 	MaxSummaryFloors             int      `env:"MAX_FLOORS_PER_HOLE" envDefault:"50"`
 }
 
+// OpenClawSecrets holds OpenClaw control-plane secrets parsed from the
+// environment. It is deliberately excluded from the startup config log.
+var OpenClawSecrets struct {
+	ProvisionKey string `env:"OPENCLAW_PROVISION_KEY"`
+}
+
 var DynamicConfig struct {
 	OpenSearch atomic.Bool
 }
 
 func InitConfig() { // load config from environment variables
 	if err := env.Parse(&Config); err != nil {
+		log.Fatal().Err(err).Send()
+	}
+	if err := env.Parse(&OpenClawSecrets); err != nil {
 		log.Fatal().Err(err).Send()
 	}
 	log.Info().Any("config", Config).Msg("init config")

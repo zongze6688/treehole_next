@@ -156,6 +156,30 @@ type OnboardRequest struct {
 	Name     string
 	Image    string
 	Metadata map[string]string
+	// CellEnv is the server-provisioned cell environment (for example the
+	// workload identity token). It is intentionally excluded from the request
+	// hash: it changes on rotate/retry and must not break idempotency.
+	CellEnv map[string]string
+}
+
+// mergeCellEnv merges app-supplied metadata with server-provisioned cell env.
+// Server values win over app values; empty server values are skipped so the
+// app value is preserved when the server has nothing to inject.
+func mergeCellEnv(app, server map[string]string) map[string]string {
+	if len(server) == 0 {
+		return app
+	}
+	merged := make(map[string]string, len(app)+len(server))
+	for k, v := range app {
+		merged[k] = v
+	}
+	for k, v := range server {
+		if v == "" {
+			continue
+		}
+		merged[k] = v
+	}
+	return merged
 }
 
 type OnboardResult struct {
@@ -213,7 +237,7 @@ func (s *InstanceService) Onboard(ctx context.Context, userID int, idempotencyKe
 	}
 
 	providerInstance, err := s.provider.Create(ctx, CreateRequest{
-		UserID: userID, Name: req.Name, Image: req.Image, Metadata: req.Metadata,
+		UserID: userID, Name: req.Name, Image: req.Image, Metadata: mergeCellEnv(req.Metadata, req.CellEnv),
 		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {

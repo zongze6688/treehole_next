@@ -35,18 +35,32 @@ func TestConfigureOpenClawLifecycleRequiresCompleteDependencies(t *testing.T) {
 
 func TestBuildDependenciesFromConfig(t *testing.T) {
 	previous := config.Config
-	t.Cleanup(func() { config.Config = previous })
+	previousSecrets := config.OpenClawSecrets
+	t.Cleanup(func() {
+		config.Config = previous
+		config.OpenClawSecrets = previousSecrets
+	})
 
 	config.Config.OpenClawFleetEnabled = false
 	deps := buildDependenciesFromConfig()
 	require.Nil(t, deps.OpenClawLifecycle)
 	require.Nil(t, deps.OpenClawProvider)
 	require.Nil(t, deps.OpenClawReadiness)
+	require.Nil(t, deps.OpenClawWorkloadIdentity)
 
 	config.Config.OpenClawFleetEnabled = true
+	config.Config.AuthUrl = "https://auth.example.test/api"
+	config.Config.OpenClawDantaWsURL = "wss://ws.example.test"
+	config.OpenClawSecrets.ProvisionKey = "test-provision-key"
 	deps = buildDependenciesFromConfig()
 	require.IsType(t, &openclaw.FleetInstanceProvider{}, deps.OpenClawProvider)
 	require.IsType(t, &openclaw.ReadinessAggregator{}, deps.OpenClawReadiness)
+	require.IsType(t, &openclaw.HTTPWorkloadIdentity{}, deps.OpenClawWorkloadIdentity)
+
+	config.OpenClawSecrets.ProvisionKey = ""
+	deps = buildDependenciesFromConfig()
+	require.IsType(t, &openclaw.FleetInstanceProvider{}, deps.OpenClawProvider)
+	require.Nil(t, deps.OpenClawWorkloadIdentity)
 }
 
 func TestConfigureOpenClawLifecycleUsesPrebuiltService(t *testing.T) {

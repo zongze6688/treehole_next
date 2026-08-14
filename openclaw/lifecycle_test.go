@@ -2,6 +2,7 @@ package openclaw
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -160,6 +161,97 @@ func TestLifecycleServiceConcurrentStartIsIdempotent(t *testing.T) {
 	require.True(t, results[0].Reused || results[1].Reused)
 }
 
+func TestLifecycleServiceOnboardInjectsWorkloadIdentityEnv(t *testing.T) {
+	db := testDB(t)
+	provider := &metadataProvider{instance: ProviderInstance{ID: "provider-1"}}
+	identity := &fakeIdentity{env: map[string]string{
+		"DANTA_ACCESS_TOKEN": "ocw-test-token",
+		"DANTA_WS_URL":       "wss://ws.example.test",
+	}}
+	service := NewLifecycleService(db, provider, readyForTest())
+	service.SetWorkloadIdentity(identity)
+
+	result, err := service.Onboard(context.Background(), 1, "onboard-wi", OnboardRequest{
+		Provider: "fleet",
+		Metadata: map[string]string{
+			"APP_META":           "app-value",
+			"DANTA_ACCESS_TOKEN": "stale-token",
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, StateReady, InstanceState(result.Instance.State))
+	require.Equal(t, 1, identity.envCallCount())
+
+	// The identity env is merged into the provider metadata with the
+	// server-provisioned value taking precedence; app metadata is preserved.
+	metadata := provider.capturedMetadata()
+	require.Equal(t, "app-value", metadata["APP_META"])
+	require.Equal(t, "ocw-test-token", metadata["DANTA_ACCESS_TOKEN"])
+	require.Equal(t, "wss://ws.example.test", metadata["DANTA_WS_URL"])
+}
+
+func TestLifecycleServiceOnboardFailsWhenIdentityEnvFails(t *testing.T) {
+	db := testDB(t)
+	provider := &metadataProvider{instance: ProviderInstance{ID: "provider-1"}}
+	identity := &fakeIdentity{envErr: errors.New("identity provisioning failed")}
+	service := NewLifecycleService(db, provider, readyForTest())
+	service.SetWorkloadIdentity(identity)
+
+	result, err := service.Onboard(context.Background(), 1, "onboard-wi-fail", OnboardRequest{Provider: "fleet"})
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Equal(t, 1, identity.envCallCount())
+	require.Equal(t, 0, provider.createCount())
+}
+
+func TestLifecycleServiceResetRevokesIdentityBestEffort(t *testing.T) {
+	db := testDB(t)
+	provider := &lifecycleProvider{}
+	identity := &fakeIdentity{revokeErr: errors.New("revoke unavailable")}
+	service := NewLifecycleService(db, provider, readyForTest())
+	service.SetWorkloadIdentity(identity)
+
+	created, err := service.Create(context.Background(), 1, "create-wi", OnboardRequest{Provider: "fleet"})
+	require.NoError(t, err)
+	started, err := service.Start(context.Background(), 1, "start-wi")
+	require.NoError(t, err)
+	require.Equal(t, StateReady, InstanceState(started.Instance.State))
+	require.Equal(t, created.Instance.ID, started.Instance.ID)
+
+	// A revocation failure must not fail the reset.
+	result, err := service.Reset(context.Background(), 1, "reset-wi")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, StateNotStarted, InstanceState(result.Instance.State))
+	require.Equal(t, 1, identity.revokeCallCount())
+	require.Equal(t, []int{1}, identity.revokedUsers)
+}
+
+func TestLifecycleServiceOnboardIgnoresCellEnvForIdempotency(t *testing.T) {
+	db := testDB(t)
+	provider := &metadataProvider{instance: ProviderInstance{ID: "provider-1"}}
+	service := NewLifecycleService(db, provider, readyForTest())
+
+	first, err := service.Onboard(context.Background(), 1, "onboard-wi-same", OnboardRequest{
+		Provider: "fleet", Name: "agent",
+		CellEnv: map[string]string{"DANTA_ACCESS_TOKEN": "first-token"},
+	})
+	require.NoError(t, err)
+	require.False(t, first.Reused)
+
+	// A different server-provisioned token must not change the idempotency
+	// hash: the second call reuses the first onboard instead of re-creating.
+	second, err := service.Onboard(context.Background(), 1, "onboard-wi-same", OnboardRequest{
+		Provider: "fleet", Name: "agent",
+		CellEnv: map[string]string{"DANTA_ACCESS_TOKEN": "rotated-token"},
+	})
+	require.NoError(t, err)
+	require.True(t, second.Reused)
+	require.Equal(t, first.Instance.ID, second.Instance.ID)
+	require.Equal(t, 1, provider.createCount())
+}
+
 func readyForTest() ReadinessChecker {
 	return NewReadinessAggregator(ReadinessChecks{
 		ContainerRunning: func(context.Context, string) (bool, error) { return true, nil },
@@ -241,3 +333,86 @@ func (p *lifecycleProvider) destroyCalls() int {
 }
 
 var _ OpenClawInstanceProvider = (*lifecycleProvider)(nil)
+
+type fakeIdentity struct {
+	mu           sync.Mutex
+	env          map[string]string
+	envErr       error
+	revokeErr    error
+	envCalls     int
+	revokeCalls  int
+	revokedUsers []int
+}
+
+func (f *fakeIdentity) Env(context.Context, int) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.envCalls++
+	return f.env, f.envErr
+}
+
+func (f *fakeIdentity) Revoke(_ context.Context, userID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revokeCalls++
+	f.revokedUsers = append(f.revokedUsers, userID)
+	return f.revokeErr
+}
+
+func (f *fakeIdentity) envCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.envCalls
+}
+
+func (f *fakeIdentity) revokeCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.revokeCalls
+}
+
+var _ WorkloadIdentity = (*fakeIdentity)(nil)
+
+// metadataProvider records the Metadata seen by provider.Create so tests can
+// assert the merged cell environment.
+type metadataProvider struct {
+	mu       sync.Mutex
+	instance ProviderInstance
+	creates  int
+	metadata map[string]string
+}
+
+func (p *metadataProvider) Create(_ context.Context, req CreateRequest) (ProviderInstance, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.creates++
+	p.metadata = req.Metadata
+	return p.instance, nil
+}
+
+func (p *metadataProvider) Start(context.Context, string) error   { return nil }
+func (p *metadataProvider) Stop(context.Context, string) error    { return nil }
+func (p *metadataProvider) Restart(context.Context, string) error { return nil }
+func (p *metadataProvider) Destroy(context.Context, string) error { return nil }
+
+func (p *metadataProvider) Inspect(context.Context, string) (ProviderInspection, error) {
+	return ProviderInspection{}, nil
+}
+
+func (p *metadataProvider) Logs(context.Context, string) (ProviderLogs, error) {
+	return ProviderLogs{}, nil
+}
+
+func (p *metadataProvider) createCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.creates
+}
+
+func (p *metadataProvider) capturedMetadata() map[string]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.metadata
+}
+
+var _ OpenClawInstanceProvider = (*metadataProvider)(nil)
