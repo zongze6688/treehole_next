@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,3 +124,42 @@ func TestFleetCLIRealDockerLifecycle(t *testing.T) {
 	require.ErrorAs(t, err, &goneErr)
 	require.Equal(t, FleetErrorNotFound, goneErr.Code)
 }
+
+// TestFleetCLIRealOnboardReachesReady drives a REAL provider-backed Onboard:
+// real fleet create + start, with container/gateway readiness sourced from the
+// real `fleet status` snapshot. The channel-authenticated signal is mocked (a
+// live Danta plugin connection is a deployment concern). The cell is purged in
+// cleanup.
+func TestFleetCLIRealOnboardReachesReady(t *testing.T) {
+	if !realFleetAvailable(t) {
+		t.Skip("openclaw fleet subcommand not available on this host")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available on this host")
+	}
+
+	transport := NewFleetCLITransport(FleetCLIOptions{Binary: fleetCLIBinary()})
+	provider := NewFleetInstanceProvider(transport, FleetProviderOptions{})
+	readiness := NewFleetReadiness(transport.CellStatus, func(int) bool { return true })
+	service := NewLifecycleService(testDB(t), provider, readiness.ReadinessChecker())
+
+	userID := int(71000000 + time.Now().UnixNano()%100000000)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelCleanup()
+		tenant, err := tenantForUser(userID)
+		if err == nil {
+			_ = transport.Destroy(cleanupCtx, tenant)
+		}
+	})
+
+	result, err := service.Onboard(ctx, userID, "real-onboard-key", OnboardRequest{Provider: "fleet"})
+	require.NoError(t, err)
+	require.NotNil(t, result.Instance)
+	require.Equal(t, StateReady, InstanceState(result.Instance.State))
+	require.Equal(t, "u"+strconv.Itoa(userID), result.Instance.ProviderInstanceID)
+}
+
