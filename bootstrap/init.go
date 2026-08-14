@@ -53,7 +53,9 @@ func buildDependenciesFromConfig() Dependencies {
 		Image:   config.Config.OpenClawFleetImage,
 		Runtime: config.Config.OpenClawFleetRuntime,
 	})
-	provider := openclaw.NewFleetInstanceProvider(transport, openclaw.FleetProviderOptions{})
+	provider := openclaw.NewFleetInstanceProvider(transport, openclaw.FleetProviderOptions{
+		Timeout: time.Duration(config.Config.OpenClawFleetTimeoutSeconds) * time.Second,
+	})
 	readiness := openclaw.NewFleetReadiness(transport.CellStatus, claw.IsChannelAuthenticated)
 	readiness.Wait = time.Duration(config.Config.OpenClawChannelWaitSeconds) * time.Second
 	deps := Dependencies{

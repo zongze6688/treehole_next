@@ -64,7 +64,7 @@ func TestHTTPWorkloadIdentityEnvProvisionsToken(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.NoError(t, decodeErr)
-	require.Equal(t, "/openclaw/token", endpoint)
+	require.Equal(t, "/api/openclaw/token", endpoint)
 	require.Equal(t, http.MethodPost, method)
 	require.Equal(t, wantKey, provisionKey)
 	require.Equal(t, 7, userID)
@@ -81,11 +81,11 @@ func TestHTTPWorkloadIdentityEnvRotatesWhenProvisionReturnsNoToken(t *testing.T)
 		mu.Lock()
 		defer mu.Unlock()
 		switch r.URL.Path {
-		case "/openclaw/token":
+		case "/api/openclaw/token":
 			// The user already holds an active token: no plaintext is returned.
 			provisionCalls++
 			_, _ = w.Write([]byte(`{"token_id":"token-1","user_id":7,"status":"active","scopes":["openclaw:connect"]}`))
-		case "/openclaw/token/rotate":
+		case "/api/openclaw/token/rotate":
 			rotateCalls++
 			rotateProvisionKey = r.Header.Get("X-Provision-Key")
 			_, _ = w.Write([]byte(`{"token_id":"token-2","user_id":7,"status":"active","scopes":["openclaw:connect"],"token":"` + wantToken + `"}`))
@@ -142,7 +142,7 @@ func TestHTTPWorkloadIdentityRevoke(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.NoError(t, decodeErr)
-	require.Equal(t, "/openclaw/token/revoke", endpoint)
+	require.Equal(t, "/api/openclaw/token/revoke", endpoint)
 	require.Equal(t, http.MethodPost, method)
 	require.Equal(t, "test-provision-key", provisionKey)
 	require.Equal(t, 7, userID)
@@ -171,9 +171,9 @@ func TestHTTPWorkloadIdentityNon200ReturnsNormalizedError(t *testing.T) {
 func TestHTTPWorkloadIdentityRotateFailureReturnsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/openclaw/token":
+		case "/api/openclaw/token":
 			_, _ = w.Write([]byte(`{}`))
-		case "/openclaw/token/rotate":
+		case "/api/openclaw/token/rotate":
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		default:
 			http.NotFound(w, r)

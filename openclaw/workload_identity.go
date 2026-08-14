@@ -122,7 +122,10 @@ func (w *HTTPWorkloadIdentity) callToken(ctx context.Context, userID int, endpoi
 	if err != nil {
 		return "", fmt.Errorf("openclaw workload identity %s: encode request: %w", endpoint, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.baseURL+"/openclaw/"+endpoint, bytes.NewReader(body))
+	// auth_next mounts the OpenClaw token API under /api (matching the
+	// /api/validate/oc endpoint treehole already calls), so the URL is
+	// {base}/api/openclaw/<endpoint>.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.baseURL+"/api/openclaw/"+endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("openclaw workload identity %s: build request: %w", endpoint, err)
 	}

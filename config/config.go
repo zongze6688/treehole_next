@@ -41,6 +41,10 @@ var Config struct {
 	OpenClawFleetImage         string `env:"OPENCLAW_FLEET_IMAGE" envDefault:"ghcr.io/openclaw/openclaw:latest"`
 	OpenClawFleetRuntime       string `env:"OPENCLAW_FLEET_RUNTIME" envDefault:"docker"`
 	OpenClawChannelWaitSeconds int    `env:"OPENCLAW_CHANNEL_WAIT_SECONDS" envDefault:"60"`
+	// OpenClawFleetTimeoutSeconds bounds each Fleet provider operation; the
+	// default is generous because a cold cell (image pull + plugin install +
+	// gateway health gate) can take minutes.
+	OpenClawFleetTimeoutSeconds int `env:"OPENCLAW_FLEET_TIMEOUT_SECONDS" envDefault:"300"`
 	ElasticsearchUrl           string `env:"ELASTICSEARCH_URL"`
 	OpenSearch                 bool   `env:"OPEN_SEARCH" envDefault:"true"`
 	OpenFuzzName               bool   `env:"OPEN_FUZZ_NAME" envDefault:"false"`
