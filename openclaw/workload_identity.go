@@ -24,20 +24,24 @@ type WorkloadIdentity interface {
 // BaseURL must be the auth_next base (config.Config.AuthUrl), for example
 // https://auth.fduhole.com/api.
 type HTTPWorkloadIdentityOptions struct {
-	BaseURL      string       // auth_next base, e.g. https://auth.fduhole.com/api
-	ProvisionKey string       // X-Provision-Key value
-	WSUrl        string       // DANTA_WS_URL to inject
-	Client       *http.Client // injectable; default http.DefaultClient
+	BaseURL            string       // auth_next base, e.g. https://auth.fduhole.com/api
+	ProvisionKey       string       // X-Provision-Key value
+	WSUrl              string       // DANTA_WS_URL to inject
+	ModelPrimary       string       // OPENCLAW_MODEL_PRIMARY to inject (optional)
+	ModelProvidersJSON string       // OPENCLAW_MODEL_PROVIDERS_JSON to inject (optional, secret)
+	Client             *http.Client // injectable; default http.DefaultClient
 }
 
 // HTTPWorkloadIdentity provisions and revokes OpenClaw tokens against the
 // auth_next openclaw token API. Tokens and the provision key are never logged
 // and never appear in error messages.
 type HTTPWorkloadIdentity struct {
-	baseURL      string
-	provisionKey string
-	wsURL        string
-	client       *http.Client
+	baseURL            string
+	provisionKey       string
+	wsURL              string
+	modelPrimary       string
+	modelProvidersJSON string
+	client             *http.Client
 }
 
 func NewHTTPWorkloadIdentity(opts HTTPWorkloadIdentityOptions) *HTTPWorkloadIdentity {
@@ -46,10 +50,12 @@ func NewHTTPWorkloadIdentity(opts HTTPWorkloadIdentityOptions) *HTTPWorkloadIden
 		client = http.DefaultClient
 	}
 	return &HTTPWorkloadIdentity{
-		baseURL:      strings.TrimRight(opts.BaseURL, "/"),
-		provisionKey: opts.ProvisionKey,
-		wsURL:        opts.WSUrl,
-		client:       client,
+		baseURL:            strings.TrimRight(opts.BaseURL, "/"),
+		provisionKey:       opts.ProvisionKey,
+		wsURL:              opts.WSUrl,
+		modelPrimary:       opts.ModelPrimary,
+		modelProvidersJSON: opts.ModelProvidersJSON,
+		client:             client,
 	}
 }
 
@@ -78,12 +84,19 @@ func (w *HTTPWorkloadIdentity) Env(ctx context.Context, userID int) (map[string]
 	if token == "" {
 		return nil, fmt.Errorf("openclaw workload identity returned no token for user %d", userID)
 	}
-	return map[string]string{
+	env := map[string]string{
 		"OPENCLAW_DANTA_TOKEN": token,
 		"DANTA_WS_URL":         w.wsURL,
 		"DANTA_USER_ID":        strconv.Itoa(userID),
 		"DANTA_INSTANCE_ID":    tenant,
-	}, nil
+	}
+	if w.modelPrimary != "" {
+		env["OPENCLAW_MODEL_PRIMARY"] = w.modelPrimary
+	}
+	if w.modelProvidersJSON != "" {
+		env["OPENCLAW_MODEL_PROVIDERS_JSON"] = w.modelProvidersJSON
+	}
+	return env, nil
 }
 
 // Revoke invalidates the user's OpenClaw token. Callers decide how to treat

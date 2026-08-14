@@ -204,3 +204,54 @@ func TestHTTPWorkloadIdentityErrorsDoNotLeakProvisionKey(t *testing.T) {
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "test-provision-key")
 }
+
+func TestHTTPWorkloadIdentityEnvIncludesModelConfig(t *testing.T) {
+	const wantToken = "ocw_test_model_token"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token_id": "token-1", "user_id": 7, "status": "active",
+			"scopes": []string{"openclaw:connect"}, "token": wantToken,
+			"created": true, "created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer server.Close()
+
+	identity := NewHTTPWorkloadIdentity(HTTPWorkloadIdentityOptions{
+		BaseURL:            server.URL,
+		ProvisionKey:       "test-provision-key",
+		WSUrl:              "wss://ws.example.test",
+		ModelPrimary:       "northgate/nex-agi/Nex-N2-Pro",
+		ModelProvidersJSON: `{"northgate":{"baseUrl":"http://127.0.0.1:3000/v1","apiKey":"fixture-key"}}`,
+	})
+	env, err := identity.Env(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, wantToken, env["OPENCLAW_DANTA_TOKEN"])
+	require.Equal(t, "northgate/nex-agi/Nex-N2-Pro", env["OPENCLAW_MODEL_PRIMARY"])
+	require.Contains(t, env["OPENCLAW_MODEL_PROVIDERS_JSON"], "fixture-key")
+	require.Equal(t, "7", env["DANTA_USER_ID"])
+	require.Equal(t, "u7", env["DANTA_INSTANCE_ID"])
+}
+
+func TestHTTPWorkloadIdentityEnvOmitsEmptyModelConfig(t *testing.T) {
+	const wantToken = "ocw_test_plain_token"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token_id": "token-1", "user_id": 7, "status": "active",
+			"scopes": []string{"openclaw:connect"}, "token": wantToken,
+			"created": true, "created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer server.Close()
+
+	identity := NewHTTPWorkloadIdentity(HTTPWorkloadIdentityOptions{
+		BaseURL: server.URL, ProvisionKey: "test-provision-key", WSUrl: "wss://ws.example.test",
+	})
+	env, err := identity.Env(context.Background(), 7)
+	require.NoError(t, err)
+	_, hasPrimary := env["OPENCLAW_MODEL_PRIMARY"]
+	_, hasProviders := env["OPENCLAW_MODEL_PROVIDERS_JSON"]
+	require.False(t, hasPrimary)
+	require.False(t, hasProviders)
+}

@@ -64,9 +64,11 @@ func buildDependenciesFromConfig() Dependencies {
 	// without one every Env call would fail at runtime for each onboard.
 	if config.OpenClawSecrets.ProvisionKey != "" {
 		deps.OpenClawWorkloadIdentity = openclaw.NewHTTPWorkloadIdentity(openclaw.HTTPWorkloadIdentityOptions{
-			BaseURL:      config.Config.AuthUrl,
-			ProvisionKey: config.OpenClawSecrets.ProvisionKey,
-			WSUrl:        config.Config.OpenClawDantaWsURL,
+			BaseURL:            config.Config.AuthUrl,
+			ProvisionKey:       config.OpenClawSecrets.ProvisionKey,
+			WSUrl:              config.Config.OpenClawDantaWsURL,
+			ModelPrimary:       config.Config.OpenClawModelPrimary,
+			ModelProvidersJSON: config.OpenClawSecrets.ModelProvidersJSON,
 		})
 	}
 	return deps

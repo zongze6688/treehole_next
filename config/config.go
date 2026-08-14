@@ -31,6 +31,9 @@ var Config struct {
 	// OpenClawDantaWsURL is the cell WebSocket endpoint injected into the cell
 	// environment as DANTA_WS_URL (non-secret).
 	OpenClawDantaWsURL string `env:"OPENCLAW_DANTA_WS_URL"`
+	// OpenClawModelPrimary is the primary model id injected as
+	// OPENCLAW_MODEL_PRIMARY (non-secret).
+	OpenClawModelPrimary string `env:"OPENCLAW_MODEL_PRIMARY"`
 	// OpenClaw fleet control-plane configuration (non-secret; the binary,
 	// image, and runtime are passed to the host-side Fleet CLI).
 	OpenClawFleetEnabled       bool   `env:"OPENCLAW_FLEET_ENABLED" envDefault:"false"`
@@ -82,7 +85,8 @@ var Config struct {
 // OpenClawSecrets holds OpenClaw control-plane secrets parsed from the
 // environment. It is deliberately excluded from the startup config log.
 var OpenClawSecrets struct {
-	ProvisionKey string `env:"OPENCLAW_PROVISION_KEY"`
+	ProvisionKey       string `env:"OPENCLAW_PROVISION_KEY"`
+	ModelProvidersJSON string `env:"OPENCLAW_MODEL_PROVIDERS_JSON"`
 }
 
 var DynamicConfig struct {
