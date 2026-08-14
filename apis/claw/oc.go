@@ -86,6 +86,19 @@ func (r *OpenClawConnectionRegistry) Get(userID int, instanceID uint) (*OcClient
 
 var ocRegistry = NewOpenClawConnectionRegistry()
 
+// IsChannelAuthenticated reports whether the user has any authenticated
+// per-instance OpenClaw connection in the registry.
+func IsChannelAuthenticated(userID int) bool {
+	ocRegistry.mu.RLock()
+	defer ocRegistry.mu.RUnlock()
+	for _, client := range ocRegistry.byUser[userID] {
+		if client.IsAuthed {
+			return true
+		}
+	}
+	return false
+}
+
 // HandleOpenClawWebSocket handles one per-instance OpenClaw connection.
 func HandleOpenClawWebSocket(c *websocket.Conn) {
 	client := &OcClient{

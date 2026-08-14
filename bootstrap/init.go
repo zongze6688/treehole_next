@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/opentreehole/go-common"
@@ -22,10 +23,10 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
-// Dependencies is the explicit Control Plane composition boundary. The
-// bootstrap package does not construct a Fleet transport; callers must provide
-// either a fully constructed lifecycle service or both provider-neutral
-// dependencies.
+// Dependencies is the explicit Control Plane composition boundary. Tests and
+// embedders may inject a fully constructed lifecycle service or both
+// provider-neutral dependencies; the production path composes a real Fleet
+// transport via buildDependenciesFromConfig (see Init).
 type Dependencies struct {
 	OpenClawLifecycle *openclaw.LifecycleService
 	OpenClawProvider  openclaw.OpenClawInstanceProvider
@@ -33,7 +34,31 @@ type Dependencies struct {
 }
 
 func Init() (*fiber.App, context.CancelFunc) {
-	return InitWithDependencies(Dependencies{})
+	// Load config before building deps. The second InitConfig call inside
+	// InitWithDependencies is intentionally tolerated: env.Parse is idempotent.
+	config.InitConfig()
+	return InitWithDependencies(buildDependenciesFromConfig())
+}
+
+// buildDependenciesFromConfig composes the real Fleet-backed dependencies when
+// the control plane is configured via OPENCLAW_FLEET_ENABLED. It fails closed
+// (empty Dependencies) otherwise.
+func buildDependenciesFromConfig() Dependencies {
+	if !config.Config.OpenClawFleetEnabled {
+		return Dependencies{}
+	}
+	transport := openclaw.NewFleetCLITransport(openclaw.FleetCLIOptions{
+		Binary:  config.Config.OpenClawFleetBinary,
+		Image:   config.Config.OpenClawFleetImage,
+		Runtime: config.Config.OpenClawFleetRuntime,
+	})
+	provider := openclaw.NewFleetInstanceProvider(transport, openclaw.FleetProviderOptions{})
+	readiness := openclaw.NewFleetReadiness(transport.CellStatus, claw.IsChannelAuthenticated)
+	readiness.Wait = time.Duration(config.Config.OpenClawChannelWaitSeconds) * time.Second
+	return Dependencies{
+		OpenClawProvider:  provider,
+		OpenClawReadiness: readiness.ReadinessChecker(),
+	}
 }
 
 func InitWithDependencies(deps Dependencies) (*fiber.App, context.CancelFunc) {

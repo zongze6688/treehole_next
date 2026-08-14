@@ -23,19 +23,26 @@ var Config struct {
 	DbURL string `env:"DB_URL"`
 	// example: MYSQL_REPLICA_URL="db1_dsn,db2_dsn", use ',' as separator
 	// should also set time_zone in url
-	MysqlReplicaURLs   []string `env:"MYSQL_REPLICA_URL"`
-	RedisURL           string   `env:"REDIS_URL"` // redis:6379
-	NotificationUrl    string   `env:"NOTIFICATION_URL"`
-	MessagePurgeDays   int      `envDefault:"7" env:"MESSAGE_PURGE_DAYS"`
-	AuthUrl            string   `env:"AUTH_URL"`
-	ElasticsearchUrl   string   `env:"ELASTICSEARCH_URL"`
-	OpenSearch         bool     `env:"OPEN_SEARCH" envDefault:"true"`
-	OpenFuzzName       bool     `env:"OPEN_FUZZ_NAME" envDefault:"false"`
-	UserAllShowHidden  bool     `env:"USER_ALL_HIDDEN" envDefault:"false"`
-	AdminOnly          bool     `env:"ADMIN_ONLY" envDefault:"false"`
-	HolePurgeDivisions []int    `env:"HOLE_PURGE_DIVISIONS" envDefault:"2"`
-	HolePurgeDays      int      `env:"HOLE_PURGE_DAYS" envDefault:"30"`
-	OpenSensitiveCheck bool     `env:"OPEN_SENSITIVE_CHECK" envDefault:"true"`
+	MysqlReplicaURLs []string `env:"MYSQL_REPLICA_URL"`
+	RedisURL         string   `env:"REDIS_URL"` // redis:6379
+	NotificationUrl  string   `env:"NOTIFICATION_URL"`
+	MessagePurgeDays int      `envDefault:"7" env:"MESSAGE_PURGE_DAYS"`
+	AuthUrl          string   `env:"AUTH_URL"`
+	// OpenClaw fleet control-plane configuration (non-secret; the binary,
+	// image, and runtime are passed to the host-side Fleet CLI).
+	OpenClawFleetEnabled       bool   `env:"OPENCLAW_FLEET_ENABLED" envDefault:"false"`
+	OpenClawFleetBinary        string `env:"OPENCLAW_FLEET_BINARY" envDefault:"openclaw"`
+	OpenClawFleetImage         string `env:"OPENCLAW_FLEET_IMAGE" envDefault:"ghcr.io/openclaw/openclaw:latest"`
+	OpenClawFleetRuntime       string `env:"OPENCLAW_FLEET_RUNTIME" envDefault:"docker"`
+	OpenClawChannelWaitSeconds int    `env:"OPENCLAW_CHANNEL_WAIT_SECONDS" envDefault:"60"`
+	ElasticsearchUrl           string `env:"ELASTICSEARCH_URL"`
+	OpenSearch                 bool   `env:"OPEN_SEARCH" envDefault:"true"`
+	OpenFuzzName               bool   `env:"OPEN_FUZZ_NAME" envDefault:"false"`
+	UserAllShowHidden          bool   `env:"USER_ALL_HIDDEN" envDefault:"false"`
+	AdminOnly                  bool   `env:"ADMIN_ONLY" envDefault:"false"`
+	HolePurgeDivisions         []int  `env:"HOLE_PURGE_DIVISIONS" envDefault:"2"`
+	HolePurgeDays              int    `env:"HOLE_PURGE_DAYS" envDefault:"30"`
+	OpenSensitiveCheck         bool   `env:"OPEN_SENSITIVE_CHECK" envDefault:"true"`
 
 	YiDunBusinessIdText          string   `env:"YI_DUN_BUSINESS_ID_TEXT" envDefault:""`
 	YiDunBusinessIdImage         string   `env:"YI_DUN_BUSINESS_ID_IMAGE" envDefault:""`

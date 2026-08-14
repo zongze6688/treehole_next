@@ -24,9 +24,10 @@ import (
 //	@BasePath	/api
 
 func main() {
-	// The concrete Fleet transport is intentionally composed outside bootstrap.
-	// Until supplied, lifecycle routes fail closed with service unavailable.
-	app, cancel := bootstrap.InitWithDependencies(bootstrap.Dependencies{})
+	// The control plane composes the real Fleet transport from environment
+	// config inside bootstrap; lifecycle routes still fail closed with service
+	// unavailable unless OPENCLAW_FLEET_ENABLED=true.
+	app, cancel := bootstrap.Init()
 	go func() {
 		err := app.Listen("0.0.0.0:8000")
 		if err != nil {

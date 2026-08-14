@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"treehole_next/apis/claw"
+	"treehole_next/config"
 	"treehole_next/openclaw"
 
 	"github.com/stretchr/testify/require"
@@ -30,6 +31,22 @@ func TestConfigureOpenClawLifecycleRequiresCompleteDependencies(t *testing.T) {
 	})
 	require.NotNil(t, service)
 	require.Same(t, service, claw.GetLifecycleService())
+}
+
+func TestBuildDependenciesFromConfig(t *testing.T) {
+	previous := config.Config
+	t.Cleanup(func() { config.Config = previous })
+
+	config.Config.OpenClawFleetEnabled = false
+	deps := buildDependenciesFromConfig()
+	require.Nil(t, deps.OpenClawLifecycle)
+	require.Nil(t, deps.OpenClawProvider)
+	require.Nil(t, deps.OpenClawReadiness)
+
+	config.Config.OpenClawFleetEnabled = true
+	deps = buildDependenciesFromConfig()
+	require.IsType(t, &openclaw.FleetInstanceProvider{}, deps.OpenClawProvider)
+	require.IsType(t, &openclaw.ReadinessAggregator{}, deps.OpenClawReadiness)
 }
 
 func TestConfigureOpenClawLifecycleUsesPrebuiltService(t *testing.T) {
