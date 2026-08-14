@@ -78,7 +78,7 @@ func TestFleetCLIEndToEndLifecycleLoop(t *testing.T) {
 	// identity-injected DANTA_ACCESS_TOKEN and DANTA_WS_URL.
 	logs := readFleetLog(t, logPath)
 	require.Contains(t, logs,
-		"fleet create u123 --json --image ghcr.io/openclaw/openclaw:latest --runtime docker "+
+		"fleet create u123 --json --no-start --image ghcr.io/openclaw/openclaw:latest --runtime docker "+
 			"--env APP_ENV=x --env DANTA_ACCESS_TOKEN=ocw_test_token "+
 			"--env DANTA_WS_URL=ws://example/api/claw/oc")
 

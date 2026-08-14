@@ -6,9 +6,9 @@ import (
 )
 
 const (
-	// defaultFleetReadinessWait is the total channel-wait budget.
+	// defaultFleetReadinessWait is the total readiness-wait budget.
 	defaultFleetReadinessWait = 60 * time.Second
-	// defaultFleetReadinessPoll is the interval between channel polls.
+	// defaultFleetReadinessPoll is the interval between readiness polls.
 	defaultFleetReadinessPoll = time.Second
 )
 
@@ -21,9 +21,9 @@ type FleetReadiness struct {
 	Status func(ctx context.Context, tenant string) (FleetCellStatus, error)
 	// IsAuthed reports whether the user has an authenticated channel.
 	IsAuthed func(userID int) bool
-	// Wait is the total channel-wait budget (default 60s).
+	// Wait is the total readiness-wait budget (default 60s).
 	Wait time.Duration
-	// Poll is the interval between channel polls (default 1s).
+	// Poll is the interval between readiness polls (default 1s).
 	Poll time.Duration
 	// Sleep waits between polls; defaults to sleepContext.
 	Sleep func(ctx context.Context, d time.Duration) error
@@ -37,7 +37,9 @@ func NewFleetReadiness(
 	return &FleetReadiness{Status: status, IsAuthed: isAuthed}
 }
 
-// Checks adapts the three real signals to the ReadinessChecks contract.
+// Checks adapts the three real signals to the ReadinessChecks contract. Each
+// signal is a single-shot snapshot; the retrying checker in ReadinessChecker
+// provides the polling.
 func (f *FleetReadiness) Checks() ReadinessChecks {
 	return ReadinessChecks{
 		ContainerRunning:     f.containerRunning,
@@ -46,9 +48,73 @@ func (f *FleetReadiness) Checks() ReadinessChecks {
 	}
 }
 
-// ReadinessChecker returns an aggregator over the real readiness checks.
+// ReadinessChecker returns a checker that polls the three real signals until
+// the aggregate is ready or the wait budget is exhausted. Polling the whole
+// aggregate (instead of only the channel) makes Onboard robust to transient
+// `fleet status` failures and slow cold-cell boots.
 func (f *FleetReadiness) ReadinessChecker() ReadinessChecker {
-	return NewReadinessAggregator(f.Checks())
+	wait := f.Wait
+	if wait <= 0 {
+		wait = defaultFleetReadinessWait
+	}
+	poll := f.Poll
+	if poll <= 0 {
+		poll = defaultFleetReadinessPoll
+	}
+	sleep := f.Sleep
+	if sleep == nil {
+		sleep = sleepContext
+	}
+	return &fleetReadinessPoller{
+		inner: NewReadinessAggregator(f.Checks()),
+		wait:  wait,
+		poll:  poll,
+		sleep: sleep,
+	}
+}
+
+// fleetReadinessPoller retries the aggregate readiness check until all three
+// signals are ready, the wait budget is exhausted (not ready, no error), or ctx
+// is canceled.
+type fleetReadinessPoller struct {
+	inner ReadinessChecker
+	wait  time.Duration
+	poll  time.Duration
+	sleep func(context.Context, time.Duration) error
+}
+
+func (p *fleetReadinessPoller) Check(ctx context.Context, req ReadinessRequest) (Readiness, error) {
+	if p == nil || p.inner == nil {
+		return Readiness{}, ErrReadinessUnavailable
+	}
+	deadline := time.Now().Add(p.wait)
+	var last Readiness
+	var lastErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			return last, err
+		}
+		last, lastErr = p.inner.Check(ctx, req)
+		if lastErr == nil && last.Ready() {
+			return last, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			// Budget exhausted: report the last transient error if any,
+			// otherwise simply "not ready yet".
+			if lastErr != nil {
+				return last, lastErr
+			}
+			return last, nil
+		}
+		d := p.poll
+		if d > remaining {
+			d = remaining
+		}
+		if err := p.sleep(ctx, d); err != nil {
+			return last, err
+		}
+	}
 }
 
 // containerRunning reports whether the Fleet cell container is running.
@@ -69,49 +135,10 @@ func (f *FleetReadiness) gatewayHealthy(ctx context.Context, tenant string) (boo
 	return st.HealthOK, err
 }
 
-// channelAuthenticated polls the registry-backed IsAuthed signal until the
-// user's channel is authenticated, the wait budget is exhausted, or ctx is
-// canceled. Budget exhaustion is not an error: the channel is simply not ready
-// yet. Errors surface only from ctx cancellation/deadline or Sleep.
+// channelAuthenticated reports whether the user's channel is authenticated.
 func (f *FleetReadiness) channelAuthenticated(ctx context.Context, userID int, _ string) (bool, error) {
 	if f == nil || f.IsAuthed == nil {
 		return false, ErrReadinessUnavailable
 	}
-	wait := f.Wait
-	if wait <= 0 {
-		wait = defaultFleetReadinessWait
-	}
-	poll := f.Poll
-	if poll <= 0 {
-		poll = defaultFleetReadinessPoll
-	}
-	sleep := f.Sleep
-	if sleep == nil {
-		sleep = sleepContext
-	}
-
-	if f.IsAuthed(userID) {
-		return true, nil
-	}
-
-	deadline := time.Now().Add(wait)
-	for {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return false, nil
-		}
-		d := poll
-		if d > remaining {
-			d = remaining
-		}
-		if err := sleep(ctx, d); err != nil {
-			return false, err
-		}
-		if f.IsAuthed(userID) {
-			return true, nil
-		}
-	}
+	return f.IsAuthed(userID), nil
 }

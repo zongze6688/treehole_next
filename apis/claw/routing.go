@@ -43,10 +43,12 @@ func ResolveTaskCorrelation(tx *gorm.DB, userID int, instanceID uint, taskID, se
 		return nil, errors.New("invalid task correlation")
 	}
 	var message ClawMessage
-	query := tx.Where(
-		"user_id = ? AND instance_id = ? AND task_id = ? AND from = ?",
-		userID, instanceID, taskID, "user",
-	)
+	// Use the map form so gorm quotes the `from` column per dialect:
+	// `from` is a SQL keyword and an unquoted raw clause breaks SQLite.
+	query := tx.Where(map[string]any{
+		"user_id": userID, "instance_id": instanceID,
+		"task_id": taskID, "from": "user",
+	})
 	if err := query.Order("created_at ASC").First(&message).Error; err != nil {
 		return nil, err
 	}

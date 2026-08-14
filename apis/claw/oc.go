@@ -265,10 +265,10 @@ func handleOcMessage(c *websocket.Conn, client *OcClient, raw json.RawMessage) {
 	}
 
 	var duplicate ClawMessage
-	if err := DB.Where(
-		"user_id = ? AND instance_id = ? AND task_id = ? AND from = ?",
-		client.UserID, client.InstanceID, msg.TaskID, "openclaw",
-	).First(&duplicate).Error; err == nil {
+	if err := DB.Where(map[string]any{
+		"user_id": client.UserID, "instance_id": client.InstanceID,
+		"task_id": msg.TaskID, "from": "openclaw",
+	}).First(&duplicate).Error; err == nil {
 		// Replies are idempotent by trusted instance/task correlation. A
 		// reconnect or provider retry must not duplicate persisted replies.
 		return

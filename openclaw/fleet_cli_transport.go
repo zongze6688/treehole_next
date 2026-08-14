@@ -156,7 +156,10 @@ func (t *FleetCLITransport) Create(ctx context.Context, req FleetCreateRequest) 
 	if image == "" {
 		image = t.image
 	}
-	args := []string{fleetCommand, "create", tenant, "--json"}
+	// Create with --no-start: the fleet create health gate (60s) is too
+	// tight for cold cells whose image installs plugins at boot. The lifecycle
+	// Start step boots the cell and the readiness poll waits for it.
+	args := []string{fleetCommand, "create", tenant, "--json", "--no-start"}
 	if image != "" {
 		args = append(args, "--image", image)
 	}

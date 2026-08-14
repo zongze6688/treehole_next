@@ -73,7 +73,7 @@ func TestFleetCLITransportCreateBuildsArgsAndParses(t *testing.T) {
 		t.Fatalf("Create invoked runner %d times, want 1", len(runner.args))
 	}
 	assertStringSlices(t, runner.args[0], []string{
-		"fleet", "create", "u123", "--json", "--image", "cell/image:latest", "--runtime", "docker",
+		"fleet", "create", "u123", "--json", "--no-start", "--image", "cell/image:latest", "--runtime", "docker",
 		"--env", "A=1", "--env", "B=2",
 	})
 	if instance.ID != "u123" {
@@ -92,7 +92,7 @@ func TestFleetCLITransportCreateUsesDefaultImageAndProvisioningStatus(t *testing
 		t.Fatalf("Create returned error: %v", err)
 	}
 	assertStringSlices(t, runner.args[0], []string{
-		"fleet", "create", "u5", "--json", "--image", defaultFleetImage, "--runtime", "docker",
+		"fleet", "create", "u5", "--json", "--no-start", "--image", defaultFleetImage, "--runtime", "docker",
 	})
 	if instance.Status != ProviderStatusProvisioning {
 		t.Fatalf("instance status = %q, want %q", instance.Status, ProviderStatusProvisioning)

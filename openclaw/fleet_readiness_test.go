@@ -59,22 +59,32 @@ func TestFleetReadinessChannelAuthenticatedImmediate(t *testing.T) {
 	require.True(t, authed)
 }
 
-func TestFleetReadinessChannelAuthenticatedPollsUntilTrue(t *testing.T) {
+func readyStatus() FleetCellStatus {
+	return FleetCellStatus{Running: true, HealthOK: true, State: "running"}
+}
+
+func TestFleetReadinessPollerWaitsUntilReady(t *testing.T) {
 	var attempts atomic.Int64
-	f := NewFleetReadiness(nil, func(int) bool { return attempts.Add(1) > 2 })
+	f := NewFleetReadiness(
+		func(ctx context.Context, tenant string) (FleetCellStatus, error) { return readyStatus(), nil },
+		func(int) bool { return attempts.Add(1) > 2 },
+	)
 	f.Wait = time.Minute
 	f.Poll = time.Millisecond
 	f.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 
-	authed, err := f.channelAuthenticated(context.Background(), 1, "u1")
+	ready, err := f.ReadinessChecker().Check(context.Background(), ReadinessRequest{UserID: 1, ProviderInstanceID: "u1"})
 	require.NoError(t, err)
-	require.True(t, authed)
+	require.True(t, ready.Ready())
 	require.Equal(t, int64(3), attempts.Load())
 }
 
-func TestFleetReadinessChannelAuthenticatedExhaustsBudget(t *testing.T) {
+func TestFleetReadinessPollerExhaustsBudgetNotReady(t *testing.T) {
 	var sleeps atomic.Int64
-	f := NewFleetReadiness(nil, func(int) bool { return false })
+	f := NewFleetReadiness(
+		func(ctx context.Context, tenant string) (FleetCellStatus, error) { return readyStatus(), nil },
+		func(int) bool { return false },
+	)
 	f.Wait = 10 * time.Millisecond
 	f.Poll = time.Millisecond
 	f.Sleep = func(ctx context.Context, d time.Duration) error {
@@ -82,38 +92,67 @@ func TestFleetReadinessChannelAuthenticatedExhaustsBudget(t *testing.T) {
 		return nil
 	}
 
-	authed, err := f.channelAuthenticated(context.Background(), 1, "u1")
+	ready, err := f.ReadinessChecker().Check(context.Background(), ReadinessRequest{UserID: 1, ProviderInstanceID: "u1"})
 	require.NoError(t, err)
-	require.False(t, authed)
+	require.False(t, ready.Ready())
 	require.Greater(t, sleeps.Load(), int64(0))
 }
 
-func TestFleetReadinessChannelAuthenticatedCanceled(t *testing.T) {
-	f := NewFleetReadiness(nil, func(int) bool { return false })
+func TestFleetReadinessPollerCanceled(t *testing.T) {
+	f := NewFleetReadiness(
+		func(ctx context.Context, tenant string) (FleetCellStatus, error) { return readyStatus(), nil },
+		func(int) bool { return false },
+	)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	authed, err := f.channelAuthenticated(ctx, 1, "u1")
+	_, err := f.ReadinessChecker().Check(ctx, ReadinessRequest{UserID: 1, ProviderInstanceID: "u1"})
 	require.ErrorIs(t, err, context.Canceled)
-	require.False(t, authed)
 }
 
-func TestFleetReadinessChannelAuthenticatedSleepError(t *testing.T) {
+func TestFleetReadinessPollerSleepError(t *testing.T) {
 	boom := errors.New("sleep failed")
-	f := NewFleetReadiness(nil, func(int) bool { return false })
+	f := NewFleetReadiness(
+		func(ctx context.Context, tenant string) (FleetCellStatus, error) { return readyStatus(), nil },
+		func(int) bool { return false },
+	)
 	f.Wait = time.Minute
 	f.Poll = time.Millisecond
 	f.Sleep = func(ctx context.Context, d time.Duration) error { return boom }
 
-	authed, err := f.channelAuthenticated(context.Background(), 1, "u1")
+	_, err := f.ReadinessChecker().Check(context.Background(), ReadinessRequest{UserID: 1, ProviderInstanceID: "u1"})
 	require.ErrorIs(t, err, boom)
-	require.False(t, authed)
+}
+
+func TestFleetReadinessPollerTransientStatusErrorRecovers(t *testing.T) {
+	var statusCalls atomic.Int64
+	var authedCalls atomic.Int64
+	f := NewFleetReadiness(
+		func(ctx context.Context, tenant string) (FleetCellStatus, error) {
+			if statusCalls.Add(1) < 3 {
+				return FleetCellStatus{}, errors.New("fleet status transient failure")
+			}
+			return readyStatus(), nil
+		},
+		func(int) bool { return authedCalls.Add(1) >= 2 },
+	)
+	f.Wait = time.Minute
+	f.Poll = time.Millisecond
+	f.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+
+	ready, err := f.ReadinessChecker().Check(context.Background(), ReadinessRequest{UserID: 1, ProviderInstanceID: "u1"})
+	require.NoError(t, err)
+	require.True(t, ready.Ready())
+	require.GreaterOrEqual(t, statusCalls.Load(), int64(3))
 }
 
 func TestFleetReadinessDefaultsToBudgetAndPoll(t *testing.T) {
 	var polled time.Duration
 	var calls int
-	f := NewFleetReadiness(nil, nil)
+	f := NewFleetReadiness(
+		func(ctx context.Context, tenant string) (FleetCellStatus, error) { return readyStatus(), nil },
+		nil,
+	)
 	f.IsAuthed = func(int) bool {
 		calls++
 		return calls >= 2
@@ -123,9 +162,9 @@ func TestFleetReadinessDefaultsToBudgetAndPoll(t *testing.T) {
 		return nil
 	}
 
-	authed, err := f.channelAuthenticated(context.Background(), 1, "u1")
+	ready, err := f.ReadinessChecker().Check(context.Background(), ReadinessRequest{UserID: 1, ProviderInstanceID: "u1"})
 	require.NoError(t, err)
-	require.True(t, authed)
+	require.True(t, ready.Ready())
 	require.Equal(t, time.Second, polled)
 }
 

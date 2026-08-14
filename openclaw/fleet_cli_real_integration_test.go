@@ -79,6 +79,16 @@ func TestFleetCLIRealDockerLifecycle(t *testing.T) {
 
 	t.Logf("created real fleet cell %s (id=%s)", tenant, instance.ID)
 
+	actionCtx, cancelAction := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancelAction()
+
+	// Create is --no-start; Start the cell, then the container/gateway come up.
+	require.NoError(t, transport.Start(actionCtx, tenant))
+	require.Eventually(t, func() bool {
+		status, err := transport.CellStatus(context.Background(), tenant)
+		return err == nil && status.Running && status.HealthOK
+	}, 3*time.Minute, 5*time.Second)
+
 	// CellStatus: the cell should be running and its gateway healthy.
 	statusCtx, cancelStatus := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelStatus()
@@ -96,8 +106,6 @@ func TestFleetCLIRealDockerLifecycle(t *testing.T) {
 	require.NotEmpty(t, strings.TrimSpace(logs.Content))
 
 	// Stop then Start: state flips.
-	actionCtx, cancelAction := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancelAction()
 	require.NoError(t, transport.Stop(actionCtx, tenant))
 	stopped, err := transport.CellStatus(context.Background(), tenant)
 	require.NoError(t, err)
@@ -162,4 +170,3 @@ func TestFleetCLIRealOnboardReachesReady(t *testing.T) {
 	require.Equal(t, StateReady, InstanceState(result.Instance.State))
 	require.Equal(t, "u"+strconv.Itoa(userID), result.Instance.ProviderInstanceID)
 }
-

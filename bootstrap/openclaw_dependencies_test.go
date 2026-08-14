@@ -54,7 +54,9 @@ func TestBuildDependenciesFromConfig(t *testing.T) {
 	config.OpenClawSecrets.ProvisionKey = "test-provision-key"
 	deps = buildDependenciesFromConfig()
 	require.IsType(t, &openclaw.FleetInstanceProvider{}, deps.OpenClawProvider)
-	require.IsType(t, &openclaw.ReadinessAggregator{}, deps.OpenClawReadiness)
+	// The readiness checker is the production polling wrapper (unexported type);
+	// its polling semantics are covered by the fleet_readiness tests.
+	require.NotNil(t, deps.OpenClawReadiness)
 	require.IsType(t, &openclaw.HTTPWorkloadIdentity{}, deps.OpenClawWorkloadIdentity)
 
 	config.OpenClawSecrets.ProvisionKey = ""
