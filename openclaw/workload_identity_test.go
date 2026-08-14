@@ -56,8 +56,10 @@ func TestHTTPWorkloadIdentityEnvProvisionsToken(t *testing.T) {
 	env, err := identity.Env(context.Background(), 7)
 	require.NoError(t, err)
 
-	require.Equal(t, wantToken, env["DANTA_ACCESS_TOKEN"])
+	require.Equal(t, wantToken, env["OPENCLAW_DANTA_TOKEN"])
 	require.Equal(t, wantWSUrl, env["DANTA_WS_URL"])
+	require.Equal(t, "7", env["DANTA_USER_ID"])
+	require.Equal(t, "u7", env["DANTA_INSTANCE_ID"])
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -98,8 +100,10 @@ func TestHTTPWorkloadIdentityEnvRotatesWhenProvisionReturnsNoToken(t *testing.T)
 	})
 	env, err := identity.Env(context.Background(), 7)
 	require.NoError(t, err)
-	require.Equal(t, wantToken, env["DANTA_ACCESS_TOKEN"])
+	require.Equal(t, wantToken, env["OPENCLAW_DANTA_TOKEN"])
 	require.Equal(t, "wss://ws.example.test", env["DANTA_WS_URL"])
+	require.Equal(t, "7", env["DANTA_USER_ID"])
+	require.Equal(t, "u7", env["DANTA_INSTANCE_ID"])
 
 	mu.Lock()
 	defer mu.Unlock()

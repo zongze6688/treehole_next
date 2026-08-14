@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -52,12 +53,17 @@ func NewHTTPWorkloadIdentity(opts HTTPWorkloadIdentityOptions) *HTTPWorkloadIden
 	}
 }
 
-// Env returns the cell environment (DANTA_ACCESS_TOKEN, DANTA_WS_URL) for the
-// user. When the user already holds an active token the provisioning endpoint
-// returns no plaintext, so the token is rotated to obtain a fresh one.
+// Env returns the cell environment (OPENCLAW_DANTA_TOKEN, DANTA_WS_URL,
+// DANTA_USER_ID, DANTA_INSTANCE_ID) for the user. When the user already holds
+// an active token the provisioning endpoint returns no plaintext, so the token
+// is rotated to obtain a fresh one.
 func (w *HTTPWorkloadIdentity) Env(ctx context.Context, userID int) (map[string]string, error) {
 	if w == nil {
 		return nil, errors.New("OpenClaw workload identity is not configured")
+	}
+	tenant, err := tenantForUser(userID)
+	if err != nil {
+		return nil, err
 	}
 	token, err := w.callToken(ctx, userID, "token")
 	if err != nil {
@@ -73,8 +79,10 @@ func (w *HTTPWorkloadIdentity) Env(ctx context.Context, userID int) (map[string]
 		return nil, fmt.Errorf("openclaw workload identity returned no token for user %d", userID)
 	}
 	return map[string]string{
-		"DANTA_ACCESS_TOKEN": token,
-		"DANTA_WS_URL":       w.wsURL,
+		"OPENCLAW_DANTA_TOKEN": token,
+		"DANTA_WS_URL":         w.wsURL,
+		"DANTA_USER_ID":        strconv.Itoa(userID),
+		"DANTA_INSTANCE_ID":    tenant,
 	}, nil
 }
 
