@@ -2,8 +2,8 @@
 # mock_openclaw.sh — a fake `openclaw fleet` CLI for integration tests.
 #
 # Emulates the documented openclaw fleet subcommands against mock data. It is
-# driven like: bash mock_openclaw.sh <subcommand> <tenant> [--json ...args]
-#   $0 is the script itself, so the argument log starts at $1 (the subcommand).
+# driven like: bash mock_openclaw.sh fleet <subcommand> <tenant> [--json ...args]
+#   $1 is the CLI subcommand ("fleet"), $2 the fleet subcommand, $3 the tenant.
 #
 # Every invocation is appended to the file named by MOCK_FLEET_LOG (default
 # /tmp/mock_openclaw.log) as a single "echo $*" line, so tests can assert the
@@ -13,8 +13,8 @@ set -euo pipefail
 log="${MOCK_FLEET_LOG:-/tmp/mock_openclaw.log}"
 echo "$*" >> "$log"
 
-sub="${1:-}"
-tenant="${2:-}"
+sub="${2:-}"
+tenant="${3:-}"
 
 case "$sub" in
   create)

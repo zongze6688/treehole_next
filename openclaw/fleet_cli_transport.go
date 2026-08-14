@@ -18,6 +18,9 @@ const (
 	defaultFleetImage   = "ghcr.io/openclaw/openclaw:latest"
 	defaultFleetRuntime = "docker"
 	fleetLogTail        = "200"
+	// fleetCommand is the OpenClaw CLI subcommand owning the fleet lifecycle:
+	// every invocation is `openclaw fleet <subcommand> ...`.
+	fleetCommand = "fleet"
 )
 
 // tenantIDPattern matches the OpenClaw Fleet tenant ID contract:
@@ -103,14 +106,6 @@ type FleetCreateResult struct {
 	NextStep      string `json:"nextStep"`
 }
 
-// FleetActionResult is the JSON shape of
-// `openclaw fleet start|stop|restart|rm --json`.
-type FleetActionResult struct {
-	Tenant     string `json:"tenant"`
-	Action     string `json:"action"`
-	DataPurged bool   `json:"dataPurged"`
-}
-
 // FleetContainerStatus is the "container" object of `fleet status --json`.
 type FleetContainerStatus struct {
 	State   string `json:"state"`
@@ -161,7 +156,7 @@ func (t *FleetCLITransport) Create(ctx context.Context, req FleetCreateRequest) 
 	if image == "" {
 		image = t.image
 	}
-	args := []string{"create", tenant, "--json"}
+	args := []string{fleetCommand, "create", tenant, "--json"}
 	if image != "" {
 		args = append(args, "--image", image)
 	}
@@ -217,13 +212,11 @@ func (t *FleetCLITransport) action(ctx context.Context, command, id string) erro
 	if err := validateTenant(id); err != nil {
 		return err
 	}
-	stdout, stderr, runErr := t.run(ctx, command, id, "--json")
+	// The real CLI exposes no --json for lifecycle actions; exit code 0 is
+	// the success contract (output is human-readable).
+	stdout, stderr, runErr := t.run(ctx, fleetCommand, command, id)
 	if runErr != nil {
 		return t.normalizeError(ctx, runErr, stdout, stderr)
-	}
-	var result FleetActionResult
-	if err := json.Unmarshal(stdout, &result); err != nil {
-		return &FleetError{Code: FleetErrorUnknown, Retryable: false, Err: err}
 	}
 	return nil
 }
@@ -236,13 +229,9 @@ func (t *FleetCLITransport) Destroy(ctx context.Context, id string) error {
 	if err := validateTenant(id); err != nil {
 		return err
 	}
-	stdout, stderr, runErr := t.run(ctx, "rm", id, "--purge-data", "--force", "--json")
+	stdout, stderr, runErr := t.run(ctx, fleetCommand, "rm", id, "--purge-data", "--force")
 	if runErr != nil {
 		return t.normalizeError(ctx, runErr, stdout, stderr)
-	}
-	var result FleetActionResult
-	if err := json.Unmarshal(stdout, &result); err != nil {
-		return &FleetError{Code: FleetErrorUnknown, Retryable: false, Err: err}
 	}
 	return nil
 }
@@ -265,7 +254,7 @@ func (t *FleetCLITransport) Logs(ctx context.Context, id string) (FleetLogs, err
 	if err := validateTenant(id); err != nil {
 		return FleetLogs{}, err
 	}
-	stdout, stderr, runErr := t.run(ctx, "logs", id, "--tail", fleetLogTail)
+	stdout, stderr, runErr := t.run(ctx, fleetCommand, "logs", id, "--tail", fleetLogTail)
 	if runErr != nil {
 		return FleetLogs{}, t.normalizeError(ctx, runErr, stdout, stderr)
 	}
@@ -293,7 +282,7 @@ func (t *FleetCLITransport) CellStatus(ctx context.Context, tenant string) (Flee
 
 // status runs `fleet status --json` and parses the result.
 func (t *FleetCLITransport) status(ctx context.Context, tenant string) (FleetStatusResult, error) {
-	stdout, stderr, runErr := t.run(ctx, "status", tenant, "--json")
+	stdout, stderr, runErr := t.run(ctx, fleetCommand, "status", tenant, "--json")
 	if runErr != nil {
 		return FleetStatusResult{}, t.normalizeError(ctx, runErr, stdout, stderr)
 	}

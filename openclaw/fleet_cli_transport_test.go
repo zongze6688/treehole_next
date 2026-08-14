@@ -73,7 +73,7 @@ func TestFleetCLITransportCreateBuildsArgsAndParses(t *testing.T) {
 		t.Fatalf("Create invoked runner %d times, want 1", len(runner.args))
 	}
 	assertStringSlices(t, runner.args[0], []string{
-		"create", "u123", "--json", "--image", "cell/image:latest", "--runtime", "docker",
+		"fleet", "create", "u123", "--json", "--image", "cell/image:latest", "--runtime", "docker",
 		"--env", "A=1", "--env", "B=2",
 	})
 	if instance.ID != "u123" {
@@ -92,7 +92,7 @@ func TestFleetCLITransportCreateUsesDefaultImageAndProvisioningStatus(t *testing
 		t.Fatalf("Create returned error: %v", err)
 	}
 	assertStringSlices(t, runner.args[0], []string{
-		"create", "u5", "--json", "--image", defaultFleetImage, "--runtime", "docker",
+		"fleet", "create", "u5", "--json", "--image", defaultFleetImage, "--runtime", "docker",
 	})
 	if instance.Status != ProviderStatusProvisioning {
 		t.Fatalf("instance status = %q, want %q", instance.Status, ProviderStatusProvisioning)
@@ -160,10 +160,10 @@ func TestFleetCLITransportActionsBuildArgs(t *testing.T) {
 		invoke func(*FleetCLITransport, context.Context, string) error
 		want   []string
 	}{
-		{"start", func(tr *FleetCLITransport, ctx context.Context, id string) error { return tr.Start(ctx, id) }, []string{"start", "u7", "--json"}},
-		{"stop", func(tr *FleetCLITransport, ctx context.Context, id string) error { return tr.Stop(ctx, id) }, []string{"stop", "u7", "--json"}},
-		{"restart", func(tr *FleetCLITransport, ctx context.Context, id string) error { return tr.Restart(ctx, id) }, []string{"restart", "u7", "--json"}},
-		{"destroy", func(tr *FleetCLITransport, ctx context.Context, id string) error { return tr.Destroy(ctx, id) }, []string{"rm", "u7", "--purge-data", "--force", "--json"}},
+		{"start", func(tr *FleetCLITransport, ctx context.Context, id string) error { return tr.Start(ctx, id) }, []string{"fleet", "start", "u7"}},
+		{"stop", func(tr *FleetCLITransport, ctx context.Context, id string) error { return tr.Stop(ctx, id) }, []string{"fleet", "stop", "u7"}},
+		{"restart", func(tr *FleetCLITransport, ctx context.Context, id string) error { return tr.Restart(ctx, id) }, []string{"fleet", "restart", "u7"}},
+		{"destroy", func(tr *FleetCLITransport, ctx context.Context, id string) error { return tr.Destroy(ctx, id) }, []string{"fleet", "rm", "u7", "--purge-data", "--force"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner := &fakeCLIRunner{stdout: []byte(`{"tenant":"u7","action":"` + tc.name + `"}`)}
@@ -238,7 +238,7 @@ func TestFleetCLITransportInspectMapsStatus(t *testing.T) {
 			if instance.ID != "u1" || instance.Status != tc.want {
 				t.Fatalf("Inspect = {ID:%q Status:%q}, want {ID:u1 Status:%q}", instance.ID, instance.Status, tc.want)
 			}
-			assertStringSlices(t, runner.args[0], []string{"status", "u1", "--json"})
+			assertStringSlices(t, runner.args[0], []string{"fleet", "status", "u1", "--json"})
 		})
 	}
 }
@@ -272,7 +272,7 @@ func TestFleetCLITransportLogsReturnsStdout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Logs returned error: %v", err)
 	}
-	assertStringSlices(t, runner.args[0], []string{"logs", "u1", "--tail", "200"})
+	assertStringSlices(t, runner.args[0], []string{"fleet", "logs", "u1", "--tail", "200"})
 	if logs.Content != "line one\nline two\n" {
 		t.Fatalf("Logs content = %q, want %q", logs.Content, "line one\nline two\n")
 	}

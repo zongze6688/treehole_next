@@ -78,7 +78,7 @@ func TestFleetCLIEndToEndLifecycleLoop(t *testing.T) {
 	// identity-injected DANTA_ACCESS_TOKEN and DANTA_WS_URL.
 	logs := readFleetLog(t, logPath)
 	require.Contains(t, logs,
-		"create u123 --json --image ghcr.io/openclaw/openclaw:latest --runtime docker "+
+		"fleet create u123 --json --image ghcr.io/openclaw/openclaw:latest --runtime docker "+
 			"--env APP_ENV=x --env DANTA_ACCESS_TOKEN=ocw_test_token "+
 			"--env DANTA_WS_URL=ws://example/api/claw/oc")
 
@@ -86,19 +86,19 @@ func TestFleetCLIEndToEndLifecycleLoop(t *testing.T) {
 	stopped, err := service.Stop(ctx, 123, "key-stop")
 	require.NoError(t, err)
 	require.Equal(t, StateStopped, InstanceState(stopped.Instance.State))
-	require.Contains(t, readFleetLog(t, logPath), "stop u123 --json")
+	require.Contains(t, readFleetLog(t, logPath), "stop u123")
 
 	// 4. Restart brings the cell back to ready.
 	restarted, err := service.Restart(ctx, 123, "key-restart")
 	require.NoError(t, err)
 	require.Equal(t, StateReady, InstanceState(restarted.Instance.State))
-	require.Contains(t, readFleetLog(t, logPath), "restart u123 --json")
+	require.Contains(t, readFleetLog(t, logPath), "restart u123")
 
 	// 5. Reset destroys the cell (purging data) and revokes the identity.
 	reset, err := service.Reset(ctx, 123, "key-reset")
 	require.NoError(t, err)
 	require.Equal(t, StateNotStarted, InstanceState(reset.Instance.State))
-	require.Contains(t, readFleetLog(t, logPath), "rm u123 --purge-data --force --json")
+	require.Contains(t, readFleetLog(t, logPath), "rm u123 --purge-data --force")
 	require.Equal(t, 1, identity.revokeCallCount())
 }
 
